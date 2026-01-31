@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/anthropics/claude-code-orchestrator/internal/activity"
 	"github.com/anthropics/claude-code-orchestrator/internal/model"
 )
 
@@ -53,10 +54,19 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	rejectChannel := workflow.GetSignalChannel(ctx, SignalReject)
 	cancelChannel := workflow.GetSignalChannel(ctx, SignalCancel)
 
+	// BUG-003 Fix: Use done channel to signal goroutine termination
+	doneChannel := workflow.NewChannel(ctx)
+	var signalHandlerDone bool
+
 	// Handle signals asynchronously
 	workflow.Go(ctx, func(ctx workflow.Context) {
-		for {
+		for !signalHandlerDone {
 			selector := workflow.NewSelector(ctx)
+
+			selector.AddReceive(doneChannel, func(c workflow.ReceiveChannel, more bool) {
+				c.Receive(ctx, nil)
+				signalHandlerDone = true
+			})
 
 			selector.AddReceive(approveChannel, func(c workflow.ReceiveChannel, more bool) {
 				c.Receive(ctx, nil)
@@ -82,8 +92,14 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 		}
 	})
 
+	// Helper to signal done to the signal handler goroutine (BUG-003)
+	signalDone := func() {
+		doneChannel.Send(ctx, struct{}{})
+	}
+
 	// Helper to create failed result
 	failedResult := func(errMsg string) *model.BugFixResult {
+		signalDone()
 		duration := workflow.Now(ctx).Sub(startTime).Seconds()
 		return &model.BugFixResult{
 			TaskID:          task.TaskID,
@@ -95,6 +111,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 
 	// Helper to create cancelled result
 	cancelledResult := func() *model.BugFixResult {
+		signalDone()
 		duration := workflow.Now(ctx).Sub(startTime).Seconds()
 		errMsg := "Workflow cancelled"
 		return &model.BugFixResult{
@@ -132,7 +149,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 			cleanupCtx = workflow.WithActivityOptions(cleanupCtx, cleanupOptions)
 
 			var cleanupErr error
-			_ = workflow.ExecuteActivity(cleanupCtx, "CleanupSandbox", sandbox.ContainerID).Get(cleanupCtx, &cleanupErr)
+			_ = workflow.ExecuteActivity(cleanupCtx, activity.ActivityCleanupSandbox, sandbox.ContainerID).Get(cleanupCtx, &cleanupErr)
 			if cleanupErr != nil {
 				logger.Error("Cleanup failed", "error", cleanupErr)
 			}
@@ -143,7 +160,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	status = model.TaskStatusProvisioning
 	logger.Info("Starting bug fix workflow", "taskID", task.TaskID)
 
-	if err := workflow.ExecuteActivity(ctx, "ProvisionSandbox", task.TaskID).Get(ctx, &sandbox); err != nil {
+	if err := workflow.ExecuteActivity(ctx, activity.ActivityProvisionSandbox, task.TaskID).Get(ctx, &sandbox); err != nil {
 		return failedResult(fmt.Sprintf("Failed to provision sandbox: %v", err)), nil
 	}
 
@@ -159,7 +176,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	cloneCtx := workflow.WithActivityOptions(ctx, cloneOptions)
 
 	var clonedPaths []string
-	if err := workflow.ExecuteActivity(cloneCtx, "CloneRepositories", *sandbox, task.Repositories, agentsMD).Get(cloneCtx, &clonedPaths); err != nil {
+	if err := workflow.ExecuteActivity(cloneCtx, activity.ActivityCloneRepositories, *sandbox, task.Repositories, agentsMD).Get(cloneCtx, &clonedPaths); err != nil {
 		return failedResult(fmt.Sprintf("Failed to clone repositories: %v", err)), nil
 	}
 
@@ -174,7 +191,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	}
 	claudeCtx := workflow.WithActivityOptions(ctx, claudeOptions)
 
-	if err := workflow.ExecuteActivity(claudeCtx, "RunClaudeCode", sandbox.ContainerID, prompt, task.TimeoutMinutes*60).Get(claudeCtx, &claudeResult); err != nil {
+	if err := workflow.ExecuteActivity(claudeCtx, activity.ActivityRunClaudeCode, sandbox.ContainerID, prompt, task.TimeoutMinutes*60).Get(claudeCtx, &claudeResult); err != nil {
 		return failedResult(fmt.Sprintf("Failed to run Claude Code: %v", err)), nil
 	}
 
@@ -191,7 +208,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 		if task.SlackChannel != nil {
 			msg := fmt.Sprintf("Claude needs clarification for %s:\n\n%s",
 				task.TaskID, *claudeResult.ClarificationQuestion)
-			_ = workflow.ExecuteActivity(ctx, "NotifySlack", *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+			_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
 		}
 
 		status = model.TaskStatusAwaitingApproval
@@ -217,7 +234,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 			summary := getChangesSummary(ctx, sandbox.ContainerID, task.Repositories)
 			msg := fmt.Sprintf("Claude completed %s. Changes:\n```\n%s\n```\nReply with 'approve' or 'reject'",
 				task.TaskID, summary)
-			_ = workflow.ExecuteActivity(ctx, "NotifySlack", *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+			_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
 		}
 
 		// Wait for approval with 24hr timeout
@@ -228,6 +245,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 			return failedResult(fmt.Sprintf("Error waiting for approval: %v", err)), nil
 		}
 		if !ok {
+			signalDone()
 			errMsg := "Approval timeout (24 hours)"
 			duration := workflow.Now(ctx).Sub(startTime).Seconds()
 			return &model.BugFixResult{
@@ -241,6 +259,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 			return cancelledResult(), nil
 		}
 		if approved != nil && !*approved {
+			signalDone()
 			errMsg := "Changes rejected"
 			duration := workflow.Now(ctx).Sub(startTime).Seconds()
 			return &model.BugFixResult{
@@ -264,7 +283,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 		verifierCtx := workflow.WithActivityOptions(ctx, verifierOptions)
 
 		var verifiersResult *model.VerifiersResult
-		if err := workflow.ExecuteActivity(verifierCtx, "RunVerifiers", *sandbox, task.Repositories, task.Verifiers).Get(verifierCtx, &verifiersResult); err != nil {
+		if err := workflow.ExecuteActivity(verifierCtx, activity.ActivityRunVerifiers, *sandbox, task.Repositories, task.Verifiers).Get(verifierCtx, &verifiersResult); err != nil {
 			return failedResult(fmt.Sprintf("Failed to run verifiers: %v", err)), nil
 		}
 
@@ -289,7 +308,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 		prDesc := buildPRDescription(task, claudeResult)
 
 		var pr *model.PullRequest
-		if err := workflow.ExecuteActivity(ctx, "CreatePullRequest",
+		if err := workflow.ExecuteActivity(ctx, activity.ActivityCreatePullRequest,
 			sandbox.ContainerID, repo, task.TaskID,
 			fmt.Sprintf("fix: %s", task.Title), prDesc).Get(ctx, &pr); err != nil {
 			return failedResult(fmt.Sprintf("Failed to create PR: %v", err)), nil
@@ -308,10 +327,11 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 		}
 		msg := fmt.Sprintf("Pull requests created for %s:\n%s",
 			task.TaskID, strings.Join(prLinks, "\n"))
-		_ = workflow.ExecuteActivity(ctx, "NotifySlack", *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+		_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
 	}
 
 	status = model.TaskStatusCompleted
+	signalDone()
 	duration := workflow.Now(ctx).Sub(startTime).Seconds()
 
 	return &model.BugFixResult{
@@ -424,7 +444,7 @@ func getChangesSummary(ctx workflow.Context, containerID string, repos []model.R
 
 	for _, repo := range repos {
 		var output map[string]string
-		err := workflow.ExecuteActivity(ctx, "GetClaudeOutput", containerID, repo.Name).Get(ctx, &output)
+		err := workflow.ExecuteActivity(ctx, activity.ActivityGetClaudeOutput, containerID, repo.Name).Get(ctx, &output)
 		if err != nil {
 			continue
 		}

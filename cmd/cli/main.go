@@ -48,12 +48,7 @@ var rootCmd = &cobra.Command{
 	Long:  "CLI for interacting with the Claude Code bug fix orchestration system",
 }
 
-var startCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start a bug fix workflow",
-	Long:  "Start a new bug fix workflow with Claude Code",
-	RunE:  runStart,
-}
+// SIMP-001: Removed deprecated 'start' command - use 'run' instead
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -105,22 +100,7 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	// Start command flags
-	startCmd.Flags().String("task-id", "", "Unique task identifier (required)")
-	startCmd.Flags().String("title", "", "Bug title (required)")
-	startCmd.Flags().String("description", "", "Bug description")
-	startCmd.Flags().String("repos", "", "Comma-separated repository URLs (required)")
-	startCmd.Flags().String("branch", "main", "Branch to use")
-	startCmd.Flags().Bool("no-approval", false, "Skip human approval step")
-	startCmd.Flags().String("slack-channel", "", "Slack channel for notifications")
-	startCmd.Flags().String("ticket-url", "", "URL to related ticket")
-	startCmd.Flags().Int("timeout", 30, "Timeout in minutes")
-	startCmd.Flags().StringArray("verifier", []string{}, "Verifier in format 'name:command' (can be repeated)")
-	startCmd.MarkFlagRequired("task-id")
-	startCmd.MarkFlagRequired("title")
-	startCmd.MarkFlagRequired("repos")
-
-	// Run command flags (alternative interface matching design doc)
+	// Run command flags (matches design doc interface)
 	runCmd.Flags().StringP("file", "f", "", "Path to task YAML file")
 	runCmd.Flags().StringArray("repo", []string{}, "Repository URL (can be repeated)")
 	runCmd.Flags().StringP("prompt", "p", "", "Task prompt/description")
@@ -153,7 +133,6 @@ func init() {
 	listCmd.Flags().String("status", "", "Filter by status (Running, Completed, Failed, Canceled, Terminated)")
 
 	// Add commands
-	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(resultCmd)
@@ -161,70 +140,6 @@ func init() {
 	rootCmd.AddCommand(rejectCmd)
 	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(listCmd)
-}
-
-func runStart(cmd *cobra.Command, args []string) error {
-	taskID, _ := cmd.Flags().GetString("task-id")
-	title, _ := cmd.Flags().GetString("title")
-	description, _ := cmd.Flags().GetString("description")
-	repos, _ := cmd.Flags().GetString("repos")
-	branch, _ := cmd.Flags().GetString("branch")
-	noApproval, _ := cmd.Flags().GetBool("no-approval")
-	slackChannel, _ := cmd.Flags().GetString("slack-channel")
-	ticketURL, _ := cmd.Flags().GetString("ticket-url")
-	timeout, _ := cmd.Flags().GetInt("timeout")
-	verifierStrs, _ := cmd.Flags().GetStringArray("verifier")
-
-	// Parse repositories
-	var repositories []model.Repository
-	for _, url := range strings.Split(repos, ",") {
-		url = strings.TrimSpace(url)
-		if url != "" {
-			repositories = append(repositories, model.NewRepository(url, branch, ""))
-		}
-	}
-
-	if len(repositories) == 0 {
-		return fmt.Errorf("at least one repository URL is required")
-	}
-
-	// Parse verifiers
-	verifiers := parseVerifiers(verifierStrs)
-
-	// Build task
-	task := model.BugFixTask{
-		TaskID:          taskID,
-		Title:           title,
-		Description:     description,
-		Repositories:    repositories,
-		Verifiers:       verifiers,
-		RequireApproval: !noApproval,
-		TimeoutMinutes:  timeout,
-	}
-
-	if slackChannel != "" {
-		task.SlackChannel = &slackChannel
-	}
-	if ticketURL != "" {
-		task.TicketURL = &ticketURL
-	}
-
-	fmt.Printf("Starting bug fix workflow...\n")
-	fmt.Printf("  Task ID: %s\n", task.TaskID)
-	fmt.Printf("  Title: %s\n", task.Title)
-	fmt.Printf("  Repositories: %s\n", repos)
-	fmt.Printf("  Verifiers: %d\n", len(verifiers))
-	fmt.Printf("  Require approval: %v\n\n", task.RequireApproval)
-
-	workflowID, err := client.StartBugFix(context.Background(), task)
-	if err != nil {
-		return fmt.Errorf("failed to start workflow: %w", err)
-	}
-
-	fmt.Printf("Workflow started: %s\n", workflowID)
-	fmt.Printf("View at: http://localhost:8233/namespaces/default/workflows/%s\n", workflowID)
-
-	return nil
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {

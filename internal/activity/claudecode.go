@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/anthropics/claude-code-orchestrator/internal/docker"
 	"github.com/anthropics/claude-code-orchestrator/internal/model"
+)
+
+const (
+	// promptFile is the temporary file used to safely pass prompts to Claude
+	promptFile = "/tmp/claude-prompt.txt"
 )
 
 // ClaudeCodeActivities contains activities for executing Claude Code.
@@ -38,15 +44,26 @@ func (a *ClaudeCodeActivities) RunClaudeCode(ctx context.Context, containerID, p
 	logger := activity.GetLogger(ctx)
 	logger.Info("Starting Claude Code execution")
 
-	// Escape the prompt for shell
-	escapedPrompt := strings.ReplaceAll(prompt, `"`, `\"`)
-	escapedPrompt = strings.ReplaceAll(escapedPrompt, `$`, `\$`)
+	// SEC-001 Fix: Use base64 encoding to safely pass prompt without shell interpretation
+	// This prevents command injection via backticks, $(), newlines, or other shell metacharacters
+	encoded := base64.StdEncoding.EncodeToString([]byte(prompt))
 
-	// Build the Claude Code command
-	command := fmt.Sprintf(`cd /workspace && claude -p "%s" --dangerously-skip-permissions --allowedTools Read,Write,Edit,Bash --output-format json 2>&1`,
-		escapedPrompt)
+	// Write the prompt to a file using base64 decode (safe from injection)
+	writeCmd := fmt.Sprintf("echo '%s' | base64 -d > %s", encoded, promptFile)
+	if _, err := a.DockerClient.ExecShellCommand(ctx, containerID, writeCmd, AgentUser); err != nil {
+		errorStr := fmt.Sprintf("failed to write prompt file: %v", err)
+		return &model.ClaudeCodeResult{
+			Success: false,
+			Output:  "",
+			Error:   &errorStr,
+		}, nil
+	}
 
-	result, err := a.DockerClient.ExecShellCommand(ctx, containerID, command, "agent")
+	// Execute claude with the prompt from file (avoids shell interpretation of prompt content)
+	command := fmt.Sprintf(`cd /workspace && claude -p "$(cat %s)" --dangerously-skip-permissions --allowedTools Read,Write,Edit,Bash --output-format json 2>&1`,
+		promptFile)
+
+	result, err := a.DockerClient.ExecShellCommand(ctx, containerID, command, AgentUser)
 	if err != nil {
 		logger.Error("Claude Code execution failed", "error", err)
 		errorStr := err.Error()
@@ -100,7 +117,7 @@ func (a *ClaudeCodeActivities) getModifiedFiles(ctx context.Context, containerID
 	// Find all git repos and get their status
 	cmd := `cd /workspace && find . -name '.git' -type d -exec dirname {} \; | while read repo; do cd /workspace/$repo 2>/dev/null && git status --porcelain | sed "s|^|$repo/|" 2>/dev/null; done`
 
-	result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, "agent")
+	result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, AgentUser)
 	if err != nil {
 		return nil
 	}
@@ -124,14 +141,14 @@ func (a *ClaudeCodeActivities) getModifiedFiles(ctx context.Context, containerID
 func (a *ClaudeCodeActivities) GetClaudeOutput(ctx context.Context, containerID, repoName string) (map[string]string, error) {
 	// Get diff
 	diffCmd := fmt.Sprintf("cd /workspace/%s && git diff", repoName)
-	diffResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, diffCmd, "agent")
+	diffResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, diffCmd, AgentUser)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get diff: %w", err)
 	}
 
 	// Get status
 	statusCmd := fmt.Sprintf("cd /workspace/%s && git status --short", repoName)
-	statusResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, statusCmd, "agent")
+	statusResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, statusCmd, AgentUser)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}

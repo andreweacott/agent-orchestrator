@@ -43,7 +43,7 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, containerID st
 
 	// Check if there are changes
 	statusCmd := fmt.Sprintf("cd /workspace/%s && git status --porcelain", repo.Name)
-	statusResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, statusCmd, "agent")
+	statusResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, statusCmd, AgentUser)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check git status: %w", err)
 	}
@@ -62,27 +62,34 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, containerID st
 	}
 
 	for _, cmd := range gitConfigCmds {
-		result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, "agent")
+		result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, AgentUser)
 		if err != nil || result.ExitCode != 0 {
 			return nil, fmt.Errorf("failed to configure git: %s", result.Stderr)
 		}
 	}
 
-	// Create branch and commit
-	gitCommands := []string{
-		fmt.Sprintf("cd /workspace/%s && git checkout -b %s", repo.Name, branchName),
-		fmt.Sprintf("cd /workspace/%s && git add -A", repo.Name),
-		fmt.Sprintf("cd /workspace/%s && git commit -m '%s'", repo.Name, title),
+	// Create branch
+	checkoutCmd := fmt.Sprintf("cd /workspace/%s && git checkout -b %s", repo.Name, branchName)
+	result, err := a.DockerClient.ExecShellCommand(ctx, containerID, checkoutCmd, AgentUser)
+	if err != nil || result.ExitCode != 0 {
+		return nil, fmt.Errorf("git checkout failed: %s", result.Stderr)
 	}
 
-	for _, cmd := range gitCommands {
-		result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, "agent")
-		if err != nil {
-			return nil, fmt.Errorf("git command failed: %w", err)
-		}
-		if result.ExitCode != 0 {
-			return nil, fmt.Errorf("git command failed: %s", result.Stderr)
-		}
+	// Stage all changes
+	addCmd := fmt.Sprintf("cd /workspace/%s && git add -A", repo.Name)
+	result, err = a.DockerClient.ExecShellCommand(ctx, containerID, addCmd, AgentUser)
+	if err != nil || result.ExitCode != 0 {
+		return nil, fmt.Errorf("git add failed: %s", result.Stderr)
+	}
+
+	// BUG-001 Fix: Use heredoc for commit message to handle special characters (quotes, etc.)
+	commitCmd := fmt.Sprintf(`cd /workspace/%s && git commit -m "$(cat <<'COMMIT_MSG_EOF'
+%s
+COMMIT_MSG_EOF
+)"`, repo.Name, title)
+	result, err = a.DockerClient.ExecShellCommand(ctx, containerID, commitCmd, AgentUser)
+	if err != nil || result.ExitCode != 0 {
+		return nil, fmt.Errorf("git commit failed: %s", result.Stderr)
 	}
 
 	// Get GitHub token
@@ -97,10 +104,12 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, containerID st
 		return nil, fmt.Errorf("failed to extract owner/repo from URL: %s", repo.URL)
 	}
 
-	// Push with token
-	pushURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", githubToken, owner, repoName)
-	pushCmd := fmt.Sprintf("cd /workspace/%s && git push %s %s", repo.Name, pushURL, branchName)
-	pushResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, pushCmd, "agent")
+	// SEC-002 Fix: Use environment variable expansion instead of embedding token in command
+	// The GITHUB_TOKEN is already set in the container environment by ProvisionSandbox
+	// This prevents the token from appearing in shell command strings and logs
+	pushCmd := fmt.Sprintf(`cd /workspace/%s && git push "https://x-access-token:${GITHUB_TOKEN}@github.com/%s/%s.git" %s`,
+		repo.Name, owner, repoName, branchName)
+	pushResult, err := a.DockerClient.ExecShellCommand(ctx, containerID, pushCmd, AgentUser)
 	if err != nil {
 		return nil, fmt.Errorf("git push failed: %w", err)
 	}

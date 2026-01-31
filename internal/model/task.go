@@ -87,7 +87,7 @@ type BugFixTask struct {
 	// Execution settings
 	TimeoutMinutes  int  `json:"timeout_minutes"`
 	RequireApproval bool `json:"require_approval"`
-	AutoMerge       bool `json:"auto_merge"`
+	// SIMP-002: Removed unused AutoMerge field
 }
 
 // NewBugFixTask creates a BugFixTask with default values.
@@ -99,7 +99,6 @@ func NewBugFixTask(taskID, title, description string, repos []Repository) BugFix
 		Repositories:    repos,
 		TimeoutMinutes:  30,
 		RequireApproval: true,
-		AutoMerge:       false,
 	}
 }
 

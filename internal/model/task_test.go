@@ -54,7 +54,7 @@ func TestNewBugFixTask(t *testing.T) {
 	assert.Len(t, task.Repositories, 1)
 	assert.Equal(t, 30, task.TimeoutMinutes)
 	assert.True(t, task.RequireApproval)
-	assert.False(t, task.AutoMerge)
+	// SIMP-002: AutoMerge field was removed as unused
 	assert.Nil(t, task.TicketURL)
 	assert.Nil(t, task.SlackChannel)
 }

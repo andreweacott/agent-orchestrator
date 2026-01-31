@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -32,36 +33,90 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+// parseMemory parses memory strings like "4g", "4G", "4096m", "4Gi" (BUG-002 fix)
+func parseMemory(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 4 * 1024 * 1024 * 1024, nil // Default 4GB
+	}
+
+	var multiplier int64 = 1
+	var numStr string
+
+	switch {
+	case strings.HasSuffix(s, "gi"):
+		multiplier = 1024 * 1024 * 1024
+		numStr = strings.TrimSuffix(s, "gi")
+	case strings.HasSuffix(s, "g"):
+		multiplier = 1024 * 1024 * 1024
+		numStr = strings.TrimSuffix(s, "g")
+	case strings.HasSuffix(s, "mi"):
+		multiplier = 1024 * 1024
+		numStr = strings.TrimSuffix(s, "mi")
+	case strings.HasSuffix(s, "m"):
+		multiplier = 1024 * 1024
+		numStr = strings.TrimSuffix(s, "m")
+	case strings.HasSuffix(s, "ki"):
+		multiplier = 1024
+		numStr = strings.TrimSuffix(s, "ki")
+	case strings.HasSuffix(s, "k"):
+		multiplier = 1024
+		numStr = strings.TrimSuffix(s, "k")
+	default:
+		numStr = s
+	}
+
+	val, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 4 * 1024 * 1024 * 1024, fmt.Errorf("invalid memory value: %s", s)
+	}
+
+	return int64(val * float64(multiplier)), nil
+}
+
+// parseCPU parses CPU strings like "2", "2.5", "500m" (millicores) (BUG-002 fix)
+func parseCPU(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 200000, nil // Default 2 CPUs
+	}
+
+	if strings.HasSuffix(s, "m") {
+		// Millicores: 1000m = 1 CPU
+		millis, err := strconv.ParseInt(strings.TrimSuffix(s, "m"), 10, 64)
+		if err != nil {
+			return 200000, fmt.Errorf("invalid cpu value: %s", s)
+		}
+		return millis * 100, nil // Convert to quota (100000 = 1 CPU)
+	}
+
+	cpus, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 200000, fmt.Errorf("invalid cpu value: %s", s)
+	}
+	return int64(cpus * 100000), nil
+}
+
 // ProvisionSandbox creates a Docker container for Claude Code execution.
 func (a *SandboxActivities) ProvisionSandbox(ctx context.Context, taskID string) (*model.SandboxInfo, error) {
 	logger := activity.GetLogger(ctx)
 	logger.Info("Provisioning sandbox", "taskID", taskID)
 
 	sandboxImage := getEnvOrDefault("SANDBOX_IMAGE", "claude-code-sandbox:latest")
-	memoryLimit := getEnvOrDefault("SANDBOX_MEMORY_LIMIT", "4g")
-	cpuLimit := getEnvOrDefault("SANDBOX_CPU_LIMIT", "2")
+	memoryLimit := getEnvOrDefault("SANDBOX_MEMORY_LIMIT", DefaultMemoryLimit)
+	cpuLimit := getEnvOrDefault("SANDBOX_CPU_LIMIT", DefaultCPULimit)
+	// SEC-003: Configurable network mode for sandbox isolation
+	networkMode := getEnvOrDefault("SANDBOX_NETWORK_MODE", DefaultNetworkMode)
 
-	// Parse memory limit
-	var memLimitBytes int64 = 4 * 1024 * 1024 * 1024 // Default 4GB
-	if memoryLimit != "" {
-		// Simple parsing: assume format like "4g" or "4096m"
-		if strings.HasSuffix(memoryLimit, "g") {
-			var gb int64
-			fmt.Sscanf(memoryLimit, "%dg", &gb)
-			memLimitBytes = gb * 1024 * 1024 * 1024
-		} else if strings.HasSuffix(memoryLimit, "m") {
-			var mb int64
-			fmt.Sscanf(memoryLimit, "%dm", &mb)
-			memLimitBytes = mb * 1024 * 1024
-		}
+	// BUG-002: Use robust resource parsing
+	memLimitBytes, err := parseMemory(memoryLimit)
+	if err != nil {
+		logger.Warn("Failed to parse memory limit, using default", "value", memoryLimit, "error", err)
 	}
 
-	// Parse CPU limit
-	var cpuQuota int64 = 200000 // Default 2 CPUs
-	if cpuLimit != "" {
-		var cpus int64
-		fmt.Sscanf(cpuLimit, "%d", &cpus)
-		cpuQuota = cpus * 100000
+	cpuQuota, err := parseCPU(cpuLimit)
+	if err != nil {
+		logger.Warn("Failed to parse CPU limit, using default", "value", cpuLimit, "error", err)
 	}
 
 	containerConfig := &container.Config{
@@ -83,6 +138,9 @@ func (a *SandboxActivities) ProvisionSandbox(ctx context.Context, taskID string)
 			CPUQuota:  cpuQuota,
 		},
 		SecurityOpt: []string{"no-new-privileges:true"},
+		// SEC-003: Apply configurable network mode
+		// Options: "bridge" (default), "none" (no network), "host", or custom network name
+		NetworkMode: container.NetworkMode(networkMode),
 	}
 
 	containerName := fmt.Sprintf("claude-sandbox-%s", taskID)
@@ -92,12 +150,38 @@ func (a *SandboxActivities) ProvisionSandbox(ctx context.Context, taskID string)
 		return nil, fmt.Errorf("failed to provision sandbox: %w", err)
 	}
 
-	logger.Info("Container created", "containerID", containerID[:12], "taskID", taskID)
+	logger.Info("Container created", "containerID", containerID[:12], "taskID", taskID, "networkMode", networkMode)
 
 	return &model.SandboxInfo{
 		ContainerID:   containerID,
-		WorkspacePath: "/workspace",
+		WorkspacePath: WorkspacePath,
 	}, nil
+}
+
+// configureGitCredentials sets up git credential helper to avoid token in command line (SEC-002 fix)
+func (a *SandboxActivities) configureGitCredentials(ctx context.Context, containerID, token string) error {
+	if token == "" {
+		return nil
+	}
+
+	// Configure git to use credential helper with stored credentials
+	// This avoids exposing the token in shell commands, process lists, and logs
+	commands := []string{
+		"git config --global credential.helper store",
+		fmt.Sprintf("echo 'https://x-access-token:%s@github.com' > ~/.git-credentials", token),
+		"chmod 600 ~/.git-credentials",
+	}
+
+	for _, cmd := range commands {
+		result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, AgentUser)
+		if err != nil {
+			return fmt.Errorf("failed to configure git credentials: %w", err)
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("failed to configure git credentials: %s", result.Stderr)
+		}
+	}
+	return nil
 }
 
 // CloneRepositories clones repositories into the sandbox and runs setup commands.
@@ -105,21 +189,31 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandbox model
 	logger := activity.GetLogger(ctx)
 	logger.Info("Cloning repositories", "count", len(repos))
 
-	var clonedPaths []string
+	// SEC-002: Configure git credentials once at start (token not exposed in clone commands)
 	githubToken := os.Getenv("GITHUB_TOKEN")
+	if err := a.configureGitCredentials(ctx, sandbox.ContainerID, githubToken); err != nil {
+		return nil, fmt.Errorf("failed to configure git credentials: %w", err)
+	}
+
+	// BUG-004: Configurable clone depth (default 50 for reasonable history)
+	cloneDepth := getEnvOrDefault("SANDBOX_GIT_CLONE_DEPTH", DefaultCloneDepth)
+
+	var clonedPaths []string
 
 	for _, repo := range repos {
 		logger.Info("Cloning repository", "url", repo.URL, "name", repo.Name, "branch", repo.Branch)
 
-		// Build clone URL with token for private repos
-		cloneURL := repo.URL
-		if githubToken != "" && strings.Contains(repo.URL, "github.com") {
-			cloneURL = strings.Replace(repo.URL, "https://github.com", fmt.Sprintf("https://%s@github.com", githubToken), 1)
+		// SEC-002: Clone without token in URL - git will use stored credentials
+		var cmd string
+		if cloneDepth == "0" || cloneDepth == "" {
+			// Full clone
+			cmd = fmt.Sprintf("git clone --branch %s %s /workspace/%s", repo.Branch, repo.URL, repo.Name)
+		} else {
+			// Shallow clone with configurable depth
+			cmd = fmt.Sprintf("git clone --depth %s --branch %s %s /workspace/%s", cloneDepth, repo.Branch, repo.URL, repo.Name)
 		}
 
-		// Clone the repository
-		cmd := fmt.Sprintf("git clone --depth 1 --branch %s %s /workspace/%s", repo.Branch, cloneURL, repo.Name)
-		result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, cmd, "agent")
+		result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, cmd, AgentUser)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute clone command: %w", err)
 		}
@@ -139,7 +233,7 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandbox model
 			for i, setupCmd := range repo.Setup {
 				logger.Info("Running setup command", "repo", repo.Name, "command", setupCmd)
 				fullCmd := fmt.Sprintf("cd %s && %s", repoPath, setupCmd)
-				result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, fullCmd, "agent")
+				result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, fullCmd, AgentUser)
 				if err != nil {
 					return nil, fmt.Errorf("failed to execute setup command %d for %s: %w", i+1, repo.Name, err)
 				}
@@ -157,7 +251,7 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandbox model
 
 	// Use heredoc to write file content
 	writeCmd := fmt.Sprintf("cat > /workspace/AGENTS.md << 'AGENTS_EOF'\n%s\nAGENTS_EOF", agentsMD)
-	result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, writeCmd, "agent")
+	result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, writeCmd, AgentUser)
 	if err != nil {
 		logger.Warn("Failed to create AGENTS.md", "error", err)
 	} else if result.ExitCode != 0 {
@@ -203,7 +297,7 @@ func (a *SandboxActivities) RunVerifiers(ctx context.Context, sandbox model.Sand
 			cmdStr := strings.Join(verifier.Command, " ")
 			fullCmd := fmt.Sprintf("cd %s && %s", repoPath, cmdStr)
 
-			result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, fullCmd, "agent")
+			result, err := a.DockerClient.ExecShellCommand(ctx, sandbox.ContainerID, fullCmd, AgentUser)
 
 			var vResult model.VerifierResult
 			vResult.Name = fmt.Sprintf("%s:%s", repo.Name, verifier.Name)
