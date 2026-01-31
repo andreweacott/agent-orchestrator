@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
@@ -16,34 +17,60 @@ import (
 // TaskQueue is the default task queue for bug fix workflows.
 const TaskQueue = "claude-code-tasks"
 
-// GetClient creates a new Temporal client.
-func GetClient(ctx context.Context) (client.Client, error) {
+// WorkflowTimeoutBuffer is minutes added to task timeout for setup/cleanup.
+const WorkflowTimeoutBuffer = 30
+
+// validWorkflowStatuses defines allowed Temporal workflow execution statuses.
+var validWorkflowStatuses = map[string]bool{
+	"Running":    true,
+	"Completed":  true,
+	"Failed":     true,
+	"Canceled":   true,
+	"Terminated": true,
+	"TimedOut":   true,
+}
+
+// Client wraps the Temporal client to reduce connection churn.
+type Client struct {
+	temporal client.Client
+}
+
+// NewClient creates a new Temporal client wrapper.
+func NewClient() (*Client, error) {
 	temporalAddr := os.Getenv("TEMPORAL_ADDRESS")
 	if temporalAddr == "" {
 		temporalAddr = "localhost:7233"
 	}
 
-	return client.Dial(client.Options{
+	c, err := client.Dial(client.Options{
 		HostPort: temporalAddr,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Temporal: %w", err)
+	}
+
+	return &Client{temporal: c}, nil
+}
+
+// Close closes the underlying Temporal client connection.
+func (c *Client) Close() {
+	c.temporal.Close()
 }
 
 // StartBugFix starts a new bug fix workflow.
-func StartBugFix(ctx context.Context, task model.BugFixTask) (string, error) {
-	c, err := GetClient(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to Temporal: %w", err)
-	}
-	defer c.Close()
-
+func (c *Client) StartBugFix(ctx context.Context, task model.BugFixTask) (string, error) {
 	workflowID := fmt.Sprintf("bug-fix-%s", task.TaskID)
 
+	// Calculate workflow timeout: task timeout + buffer for setup/cleanup
+	workflowTimeout := time.Duration(task.TimeoutMinutes+WorkflowTimeoutBuffer) * time.Minute
+
 	options := client.StartWorkflowOptions{
-		ID:        workflowID,
-		TaskQueue: TaskQueue,
+		ID:                       workflowID,
+		TaskQueue:                TaskQueue,
+		WorkflowExecutionTimeout: workflowTimeout,
 	}
 
-	we, err := c.ExecuteWorkflow(ctx, options, workflow.BugFix, task)
+	we, err := c.temporal.ExecuteWorkflow(ctx, options, workflow.BugFix, task)
 	if err != nil {
 		return "", fmt.Errorf("failed to start workflow: %w", err)
 	}
@@ -52,14 +79,8 @@ func StartBugFix(ctx context.Context, task model.BugFixTask) (string, error) {
 }
 
 // GetWorkflowStatus queries the status of a workflow.
-func GetWorkflowStatus(ctx context.Context, workflowID string) (model.TaskStatus, error) {
-	c, err := GetClient(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to Temporal: %w", err)
-	}
-	defer c.Close()
-
-	resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryStatus)
+func (c *Client) GetWorkflowStatus(ctx context.Context, workflowID string) (model.TaskStatus, error) {
+	resp, err := c.temporal.QueryWorkflow(ctx, workflowID, "", workflow.QueryStatus)
 	if err != nil {
 		return "", fmt.Errorf("failed to query workflow: %w", err)
 	}
@@ -73,14 +94,8 @@ func GetWorkflowStatus(ctx context.Context, workflowID string) (model.TaskStatus
 }
 
 // GetWorkflowResult waits for and returns the workflow result.
-func GetWorkflowResult(ctx context.Context, workflowID string) (*model.BugFixResult, error) {
-	c, err := GetClient(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Temporal: %w", err)
-	}
-	defer c.Close()
-
-	run := c.GetWorkflow(ctx, workflowID, "")
+func (c *Client) GetWorkflowResult(ctx context.Context, workflowID string) (*model.BugFixResult, error) {
+	run := c.temporal.GetWorkflow(ctx, workflowID, "")
 
 	var result model.BugFixResult
 	if err := run.Get(ctx, &result); err != nil {
@@ -91,36 +106,18 @@ func GetWorkflowResult(ctx context.Context, workflowID string) (*model.BugFixRes
 }
 
 // ApproveWorkflow sends an approval signal to a workflow.
-func ApproveWorkflow(ctx context.Context, workflowID string) error {
-	c, err := GetClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Temporal: %w", err)
-	}
-	defer c.Close()
-
-	return c.SignalWorkflow(ctx, workflowID, "", workflow.SignalApprove, nil)
+func (c *Client) ApproveWorkflow(ctx context.Context, workflowID string) error {
+	return c.temporal.SignalWorkflow(ctx, workflowID, "", workflow.SignalApprove, nil)
 }
 
 // RejectWorkflow sends a rejection signal to a workflow.
-func RejectWorkflow(ctx context.Context, workflowID string) error {
-	c, err := GetClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Temporal: %w", err)
-	}
-	defer c.Close()
-
-	return c.SignalWorkflow(ctx, workflowID, "", workflow.SignalReject, nil)
+func (c *Client) RejectWorkflow(ctx context.Context, workflowID string) error {
+	return c.temporal.SignalWorkflow(ctx, workflowID, "", workflow.SignalReject, nil)
 }
 
 // CancelWorkflow sends a cancellation signal to a workflow.
-func CancelWorkflow(ctx context.Context, workflowID string) error {
-	c, err := GetClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Temporal: %w", err)
-	}
-	defer c.Close()
-
-	return c.SignalWorkflow(ctx, workflowID, "", workflow.SignalCancel, nil)
+func (c *Client) CancelWorkflow(ctx context.Context, workflowID string) error {
+	return c.temporal.SignalWorkflow(ctx, workflowID, "", workflow.SignalCancel, nil)
 }
 
 // WorkflowInfo contains summary information about a workflow.
@@ -131,36 +128,122 @@ type WorkflowInfo struct {
 	StartTime  string
 }
 
-// ListWorkflows lists workflows matching the given status filter.
-func ListWorkflows(ctx context.Context, statusFilter string) ([]WorkflowInfo, error) {
-	c, err := GetClient(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Temporal: %w", err)
-	}
-	defer c.Close()
-
+// ListWorkflows lists workflows matching the given status filter with pagination.
+// If limit is 0, all matching workflows are returned.
+func (c *Client) ListWorkflows(ctx context.Context, statusFilter string, limit int) ([]WorkflowInfo, error) {
 	query := `WorkflowType = "BugFix"`
 	if statusFilter != "" {
+		if !validWorkflowStatuses[statusFilter] {
+			return nil, fmt.Errorf("invalid status filter: %q (valid: Running, Completed, Failed, Canceled, Terminated, TimedOut)", statusFilter)
+		}
 		query += fmt.Sprintf(` AND ExecutionStatus = "%s"`, statusFilter)
 	}
 
 	var workflows []WorkflowInfo
+	var nextPageToken []byte
 
-	resp, err := c.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-		Query: query,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list workflows: %w", err)
-	}
-
-	for _, wf := range resp.Executions {
-		workflows = append(workflows, WorkflowInfo{
-			WorkflowID: wf.Execution.WorkflowId,
-			RunID:      wf.Execution.RunId,
-			Status:     wf.Status.String(),
-			StartTime:  wf.StartTime.AsTime().Format("2006-01-02 15:04:05"),
+	for {
+		resp, err := c.temporal.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+			Query:         query,
+			NextPageToken: nextPageToken,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list workflows: %w", err)
+		}
+
+		for _, wf := range resp.Executions {
+			if limit > 0 && len(workflows) >= limit {
+				break
+			}
+			workflows = append(workflows, WorkflowInfo{
+				WorkflowID: wf.Execution.WorkflowId,
+				RunID:      wf.Execution.RunId,
+				Status:     wf.Status.String(),
+				StartTime:  wf.StartTime.AsTime().Format("2006-01-02 15:04:05"),
+			})
+		}
+
+		nextPageToken = resp.NextPageToken
+		if len(nextPageToken) == 0 || (limit > 0 && len(workflows) >= limit) {
+			break
+		}
 	}
 
 	return workflows, nil
+}
+
+// Standalone functions for backwards compatibility with existing CLI code.
+// These create a client per call, which is less efficient but simpler for one-off operations.
+//
+// Deprecated: For multiple operations, prefer creating a Client with NewClient()
+// and reusing it to reduce connection overhead.
+
+// StartBugFix starts a new bug fix workflow (standalone version).
+func StartBugFix(ctx context.Context, task model.BugFixTask) (string, error) {
+	c, err := NewClient()
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	return c.StartBugFix(ctx, task)
+}
+
+// GetWorkflowStatus queries the status of a workflow (standalone version).
+func GetWorkflowStatus(ctx context.Context, workflowID string) (model.TaskStatus, error) {
+	c, err := NewClient()
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	return c.GetWorkflowStatus(ctx, workflowID)
+}
+
+// GetWorkflowResult waits for and returns the workflow result (standalone version).
+func GetWorkflowResult(ctx context.Context, workflowID string) (*model.BugFixResult, error) {
+	c, err := NewClient()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.GetWorkflowResult(ctx, workflowID)
+}
+
+// ApproveWorkflow sends an approval signal to a workflow (standalone version).
+func ApproveWorkflow(ctx context.Context, workflowID string) error {
+	c, err := NewClient()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.ApproveWorkflow(ctx, workflowID)
+}
+
+// RejectWorkflow sends a rejection signal to a workflow (standalone version).
+func RejectWorkflow(ctx context.Context, workflowID string) error {
+	c, err := NewClient()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.RejectWorkflow(ctx, workflowID)
+}
+
+// CancelWorkflow sends a cancellation signal to a workflow (standalone version).
+func CancelWorkflow(ctx context.Context, workflowID string) error {
+	c, err := NewClient()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.CancelWorkflow(ctx, workflowID)
+}
+
+// ListWorkflows lists workflows matching the given status filter (standalone version).
+func ListWorkflows(ctx context.Context, statusFilter string) ([]WorkflowInfo, error) {
+	c, err := NewClient()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.ListWorkflows(ctx, statusFilter, 0)
 }

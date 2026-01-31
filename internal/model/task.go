@@ -23,10 +23,10 @@ const (
 
 // Repository represents a repository to clone into the sandbox.
 type Repository struct {
-	URL    string   `json:"url"`              // e.g., "https://github.com/org/repo.git"
-	Branch string   `json:"branch"`           // Default: "main"
-	Name   string   `json:"name"`             // Directory name, derived from URL if not set
-	Setup  []string `json:"setup,omitempty"`  // Commands to run after clone (e.g., "go mod download")
+	URL    string   `json:"url"`             // e.g., "https://github.com/org/repo.git"
+	Branch string   `json:"branch"`          // Default: "main"
+	Name   string   `json:"name"`            // Directory name, derived from URL if not set
+	Setup  []string `json:"setup,omitempty"` // Commands to run after clone (e.g., "go mod download")
 }
 
 // Verifier represents a validation command to run after transformation.

@@ -55,10 +55,12 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, containerID st
 
 	branchName := fmt.Sprintf("fix/claude-%s", taskID)
 
-	// Configure git
+	// Configure git with configurable identity
+	gitEmail := getEnvOrDefault("GIT_USER_EMAIL", DefaultGitEmail)
+	gitName := getEnvOrDefault("GIT_USER_NAME", DefaultGitName)
 	gitConfigCmds := []string{
-		`git config --global user.email "claude-agent@example.com"`,
-		`git config --global user.name "Claude Agent"`,
+		fmt.Sprintf(`git config --global user.email "%s"`, gitEmail),
+		fmt.Sprintf(`git config --global user.name "%s"`, gitName),
 	}
 
 	for _, cmd := range gitConfigCmds {

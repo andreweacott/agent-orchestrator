@@ -4,7 +4,9 @@ package activity
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -14,6 +16,47 @@ import (
 	"github.com/anthropics/claude-code-orchestrator/internal/docker"
 	"github.com/anthropics/claude-code-orchestrator/internal/model"
 )
+
+// gitRefPattern validates git ref names (branches, tags, repo names)
+// SEC-004: Prevents command injection via malicious ref names
+var gitRefPattern = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
+
+// validateGitRef validates that a string is safe for use as a git ref
+func validateGitRef(ref, fieldName string) error {
+	if ref == "" {
+		return fmt.Errorf("%s cannot be empty", fieldName)
+	}
+	if !gitRefPattern.MatchString(ref) {
+		return fmt.Errorf("invalid %s: %q contains invalid characters", fieldName, ref)
+	}
+	return nil
+}
+
+// validateGitURL validates that a URL is a safe git URL (SEC-005)
+func validateGitURL(rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("URL cannot be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" && u.Scheme != "git" && u.Scheme != "ssh" {
+		return fmt.Errorf("unsupported URL scheme: %s", u.Scheme)
+	}
+	return nil
+}
+
+// shortContainerID safely truncates container ID for logging
+func shortContainerID(id string) string {
+	if id == "" {
+		return "<empty>"
+	}
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
 
 // SandboxActivities contains activities for managing sandbox containers.
 type SandboxActivities struct {
@@ -150,7 +193,7 @@ func (a *SandboxActivities) ProvisionSandbox(ctx context.Context, taskID string)
 		return nil, fmt.Errorf("failed to provision sandbox: %w", err)
 	}
 
-	logger.Info("Container created", "containerID", containerID[:12], "taskID", taskID, "networkMode", networkMode)
+	logger.Info("Container created", "containerID", shortContainerID(containerID), "taskID", taskID, "networkMode", networkMode)
 
 	return &model.SandboxInfo{
 		ContainerID:   containerID,
@@ -201,6 +244,18 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandbox model
 	var clonedPaths []string
 
 	for _, repo := range repos {
+		// SEC-004: Validate git refs to prevent command injection
+		if err := validateGitRef(repo.Branch, "branch"); err != nil {
+			return nil, fmt.Errorf("invalid branch for %s: %w", repo.Name, err)
+		}
+		if err := validateGitRef(repo.Name, "repo name"); err != nil {
+			return nil, fmt.Errorf("invalid repo name: %w", err)
+		}
+		// SEC-005: Validate URL to ensure safe git operations
+		if err := validateGitURL(repo.URL); err != nil {
+			return nil, fmt.Errorf("invalid URL for %s: %w", repo.Name, err)
+		}
+
 		logger.Info("Cloning repository", "url", repo.URL, "name", repo.Name, "branch", repo.Branch)
 
 		// SEC-002: Clone without token in URL - git will use stored credentials
@@ -264,14 +319,14 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandbox model
 // CleanupSandbox stops and removes the sandbox container.
 func (a *SandboxActivities) CleanupSandbox(ctx context.Context, containerID string) error {
 	logger := activity.GetLogger(ctx)
-	logger.Info("Cleaning up container", "containerID", containerID[:12])
+	logger.Info("Cleaning up container", "containerID", shortContainerID(containerID))
 
 	if err := a.DockerClient.StopAndRemoveContainer(ctx, containerID, 10); err != nil {
 		logger.Error("Error cleaning up container", "error", err)
 		return err
 	}
 
-	logger.Info("Container removed", "containerID", containerID[:12])
+	logger.Info("Container removed", "containerID", shortContainerID(containerID))
 	return nil
 }
 

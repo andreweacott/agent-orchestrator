@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -14,14 +15,21 @@ import (
 	"github.com/anthropics/claude-code-orchestrator/internal/model"
 )
 
+// must panics if err is non-nil. Used for initialization errors.
+func must(err error) {
+	if err != nil {
+		panic(fmt.Errorf("initialization error: %w", err))
+	}
+}
+
 // TaskFile represents the YAML task file format.
 type TaskFile struct {
-	ID          string           `yaml:"id"`
-	Title       string           `yaml:"title"`
-	Description string           `yaml:"description,omitempty"`
+	ID           string           `yaml:"id"`
+	Title        string           `yaml:"title"`
+	Description  string           `yaml:"description,omitempty"`
 	Repositories []RepositorySpec `yaml:"repositories"`
-	Verifiers   []VerifierSpec   `yaml:"verifiers,omitempty"`
-	Timeout     string           `yaml:"timeout,omitempty"` // e.g., "30m"
+	Verifiers    []VerifierSpec   `yaml:"verifiers,omitempty"`
+	Timeout      string           `yaml:"timeout,omitempty"` // e.g., "30m"
 
 	// Optional
 	TicketURL       string `yaml:"ticket_url,omitempty"`
@@ -111,23 +119,23 @@ func init() {
 
 	// Status command flags
 	statusCmd.Flags().String("workflow-id", "", "Workflow ID (required)")
-	statusCmd.MarkFlagRequired("workflow-id")
+	must(statusCmd.MarkFlagRequired("workflow-id"))
 
 	// Result command flags
 	resultCmd.Flags().String("workflow-id", "", "Workflow ID (required)")
-	resultCmd.MarkFlagRequired("workflow-id")
+	must(resultCmd.MarkFlagRequired("workflow-id"))
 
 	// Approve command flags
 	approveCmd.Flags().String("workflow-id", "", "Workflow ID (required)")
-	approveCmd.MarkFlagRequired("workflow-id")
+	must(approveCmd.MarkFlagRequired("workflow-id"))
 
 	// Reject command flags
 	rejectCmd.Flags().String("workflow-id", "", "Workflow ID (required)")
-	rejectCmd.MarkFlagRequired("workflow-id")
+	must(rejectCmd.MarkFlagRequired("workflow-id"))
 
 	// Cancel command flags
 	cancelCmd.Flags().String("workflow-id", "", "Workflow ID (required)")
-	cancelCmd.MarkFlagRequired("workflow-id")
+	must(cancelCmd.MarkFlagRequired("workflow-id"))
 
 	// List command flags
 	listCmd.Flags().String("status", "", "Filter by status (Running, Completed, Failed, Canceled, Terminated)")
@@ -351,10 +359,9 @@ func loadTaskFile(path string) (*model.BugFixTask, error) {
 	// Parse timeout (default 30m)
 	timeout := 30
 	if tf.Timeout != "" {
-		// Simple parsing: look for "Nm" format
-		var mins int
-		if _, err := fmt.Sscanf(tf.Timeout, "%dm", &mins); err == nil {
-			timeout = mins
+		// Use time.ParseDuration for flexible parsing (e.g., "30m", "1h", "1h30m")
+		if d, err := time.ParseDuration(tf.Timeout); err == nil {
+			timeout = int(d.Minutes())
 		}
 	}
 
