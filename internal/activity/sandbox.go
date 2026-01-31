@@ -13,8 +13,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"go.temporal.io/sdk/activity"
 
-	"github.com/anthropics/claude-code-orchestrator/internal/docker"
-	"github.com/anthropics/claude-code-orchestrator/internal/model"
+	"github.com/andreweacott/agent-orchestrator/internal/docker"
+	"github.com/andreweacott/agent-orchestrator/internal/model"
 )
 
 // gitRefPattern validates git ref names (branches, tags, repo names)
@@ -209,20 +209,19 @@ func (a *SandboxActivities) configureGitCredentials(ctx context.Context, contain
 
 	// Configure git to use credential helper with stored credentials
 	// This avoids exposing the token in shell commands, process lists, and logs
-	commands := []string{
-		"git config --global credential.helper store",
-		fmt.Sprintf("echo 'https://x-access-token:%s@github.com' > ~/.git-credentials", token),
-		"chmod 600 ~/.git-credentials",
-	}
+	// Use umask 077 to ensure the credentials file is never world-readable (SEC-002 enhancement)
+	cmd := fmt.Sprintf(`git config --global credential.helper store && (
+umask 077 && cat > ~/.git-credentials << 'CRED_EOF'
+https://x-access-token:%s@github.com
+CRED_EOF
+)`, token)
 
-	for _, cmd := range commands {
-		result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, AgentUser)
-		if err != nil {
-			return fmt.Errorf("failed to configure git credentials: %w", err)
-		}
-		if result.ExitCode != 0 {
-			return fmt.Errorf("failed to configure git credentials: %s", result.Stderr)
-		}
+	result, err := a.DockerClient.ExecShellCommand(ctx, containerID, cmd, AgentUser)
+	if err != nil {
+		return fmt.Errorf("failed to configure git credentials: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("failed to configure git credentials: %s", result.Stderr)
 	}
 	return nil
 }

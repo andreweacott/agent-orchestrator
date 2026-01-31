@@ -20,6 +20,9 @@ const (
 	ActivityRunClaudeCode   = "RunClaudeCode"
 	ActivityGetClaudeOutput = "GetClaudeOutput"
 
+	// Deterministic transformation activities
+	ActivityExecuteDeterministic = "ExecuteDeterministic"
+
 	// GitHub activities
 	ActivityCreatePullRequest = "CreatePullRequest"
 

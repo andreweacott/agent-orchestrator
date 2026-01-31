@@ -9,8 +9,8 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/anthropics/claude-code-orchestrator/internal/activity"
-	"github.com/anthropics/claude-code-orchestrator/internal/model"
+	"github.com/andreweacott/agent-orchestrator/internal/activity"
+	"github.com/andreweacott/agent-orchestrator/internal/model"
 )
 
 // Signal and query names
@@ -22,8 +22,9 @@ const (
 	QueryResult   = "get_claude_result"
 )
 
-// BugFix is the main workflow for fixing bugs using Claude Code.
-func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, error) {
+// Transform is the main workflow for code transformations.
+// It supports both agentic (Claude Code) and deterministic (Docker) transformations.
+func Transform(ctx workflow.Context, task model.TransformTask) (*model.TransformResult, error) {
 	logger := workflow.GetLogger(ctx)
 	startTime := workflow.Now(ctx)
 
@@ -98,10 +99,10 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	}
 
 	// Helper to create failed result
-	failedResult := func(errMsg string) *model.BugFixResult {
+	failedResult := func(errMsg string) *model.TransformResult {
 		signalDone()
 		duration := workflow.Now(ctx).Sub(startTime).Seconds()
-		return &model.BugFixResult{
+		return &model.TransformResult{
 			TaskID:          task.TaskID,
 			Status:          model.TaskStatusFailed,
 			Error:           &errMsg,
@@ -110,11 +111,11 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	}
 
 	// Helper to create cancelled result
-	cancelledResult := func() *model.BugFixResult {
+	cancelledResult := func() *model.TransformResult {
 		signalDone()
 		duration := workflow.Now(ctx).Sub(startTime).Seconds()
 		errMsg := "Workflow cancelled"
-		return &model.BugFixResult{
+		return &model.TransformResult{
 			TaskID:          task.TaskID,
 			Status:          model.TaskStatusCancelled,
 			Error:           &errMsg,
@@ -158,7 +159,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 
 	// 1. Provision sandbox
 	status = model.TaskStatusProvisioning
-	logger.Info("Starting bug fix workflow", "taskID", task.TaskID)
+	logger.Info("Starting transform workflow", "taskID", task.TaskID)
 
 	if err := workflow.ExecuteActivity(ctx, activity.ActivityProvisionSandbox, task.TaskID).Get(ctx, &sandbox); err != nil {
 		return failedResult(fmt.Sprintf("Failed to provision sandbox: %v", err)), nil
@@ -180,99 +181,164 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 		return failedResult(fmt.Sprintf("Failed to clone repositories: %v", err)), nil
 	}
 
-	// 3. Run Claude Code
+	// 3. Run transformation (Claude Code OR Deterministic)
 	status = model.TaskStatusRunning
-	prompt := buildPrompt(task)
 
-	claudeOptions := workflow.ActivityOptions{
-		StartToCloseTimeout: time.Duration(task.TimeoutMinutes+5) * time.Minute,
-		HeartbeatTimeout:    5 * time.Minute,
-		RetryPolicy:         retryPolicy,
-	}
-	claudeCtx := workflow.WithActivityOptions(ctx, claudeOptions)
+	var filesModified []string
 
-	if err := workflow.ExecuteActivity(claudeCtx, activity.ActivityRunClaudeCode, sandbox.ContainerID, prompt, task.TimeoutMinutes*60).Get(claudeCtx, &claudeResult); err != nil {
-		return failedResult(fmt.Sprintf("Failed to run Claude Code: %v", err)), nil
+	// Default to agentic mode if not specified
+	transformMode := task.TransformMode
+	if transformMode == "" {
+		transformMode = model.TransformModeAgentic
 	}
 
-	if !claudeResult.Success {
-		errMsg := "Claude Code execution failed"
-		if claudeResult.Error != nil {
-			errMsg = *claudeResult.Error
-		}
-		return failedResult(errMsg), nil
+	// Validate deterministic mode has required image
+	if transformMode == model.TransformModeDeterministic && task.TransformImage == "" {
+		return failedResult("Deterministic mode requires TransformImage to be set"), nil
 	}
 
-	// 4. Handle clarification if needed
-	if claudeResult.NeedsClarification {
-		if task.SlackChannel != nil {
-			msg := fmt.Sprintf("Claude needs clarification for %s:\n\n%s",
-				task.TaskID, *claudeResult.ClarificationQuestion)
-			_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+	if transformMode == model.TransformModeDeterministic {
+		// Run deterministic transformation
+		logger.Info("Running deterministic transformation", "image", task.TransformImage)
+
+		deterministicOptions := workflow.ActivityOptions{
+			StartToCloseTimeout: time.Duration(task.TimeoutMinutes+5) * time.Minute,
+			HeartbeatTimeout:    5 * time.Minute,
+			RetryPolicy:         retryPolicy,
 		}
+		deterministicCtx := workflow.WithActivityOptions(ctx, deterministicOptions)
 
-		status = model.TaskStatusAwaitingApproval
+		var deterministicResult *model.DeterministicResult
+		err := workflow.ExecuteActivity(deterministicCtx, activity.ActivityExecuteDeterministic,
+			*sandbox, task.TransformImage, task.TransformArgs,
+			task.TransformEnv, task.Repositories).Get(deterministicCtx, &deterministicResult)
 
-		// Wait for approval or cancellation
-		ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
-			return approved != nil || cancellationRequested
-		})
-		if err != nil || !ok {
-			return failedResult("Timeout waiting for clarification response"), nil
-		}
-		if cancellationRequested {
-			return cancelledResult(), nil
-		}
-	}
-
-	// 5. Human approval for changes (if required)
-	if task.RequireApproval && len(claudeResult.FilesModified) > 0 {
-		status = model.TaskStatusAwaitingApproval
-
-		if task.SlackChannel != nil {
-			// Get changes summary
-			summary := getChangesSummary(ctx, sandbox.ContainerID, task.Repositories)
-			msg := fmt.Sprintf("Claude completed %s. Changes:\n```\n%s\n```\nReply with 'approve' or 'reject'",
-				task.TaskID, summary)
-			_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
-		}
-
-		// Wait for approval with 24hr timeout
-		ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
-			return approved != nil || cancellationRequested
-		})
 		if err != nil {
-			return failedResult(fmt.Sprintf("Error waiting for approval: %v", err)), nil
+			return failedResult(fmt.Sprintf("Failed to run deterministic transformation: %v", err)), nil
 		}
-		if !ok {
+
+		if !deterministicResult.Success {
+			errMsg := "Deterministic transformation failed"
+			if deterministicResult.Error != nil {
+				errMsg = *deterministicResult.Error
+			}
+			return failedResult(errMsg), nil
+		}
+
+		filesModified = deterministicResult.FilesModified
+
+		// Skip PR if no changes
+		if len(filesModified) == 0 {
+			logger.Info("No files modified by deterministic transformation")
 			signalDone()
-			errMsg := "Approval timeout (24 hours)"
 			duration := workflow.Now(ctx).Sub(startTime).Seconds()
-			return &model.BugFixResult{
+			return &model.TransformResult{
 				TaskID:          task.TaskID,
-				Status:          model.TaskStatusCancelled,
-				Error:           &errMsg,
+				Status:          model.TaskStatusCompleted,
+				PullRequests:    []model.PullRequest{},
 				DurationSeconds: &duration,
 			}, nil
 		}
-		if cancellationRequested {
-			return cancelledResult(), nil
+
+		logger.Info("Deterministic transformation completed", "filesModified", len(filesModified))
+
+		// Note: Skip human approval for deterministic mode (transforms are pre-vetted)
+	} else {
+		// Run Claude Code (agentic mode - default)
+		prompt := buildPrompt(task)
+
+		claudeOptions := workflow.ActivityOptions{
+			StartToCloseTimeout: time.Duration(task.TimeoutMinutes+5) * time.Minute,
+			HeartbeatTimeout:    5 * time.Minute,
+			RetryPolicy:         retryPolicy,
 		}
-		if approved != nil && !*approved {
-			signalDone()
-			errMsg := "Changes rejected"
-			duration := workflow.Now(ctx).Sub(startTime).Seconds()
-			return &model.BugFixResult{
-				TaskID:          task.TaskID,
-				Status:          model.TaskStatusCancelled,
-				Error:           &errMsg,
-				DurationSeconds: &duration,
-			}, nil
+		claudeCtx := workflow.WithActivityOptions(ctx, claudeOptions)
+
+		if err := workflow.ExecuteActivity(claudeCtx, activity.ActivityRunClaudeCode, sandbox.ContainerID, prompt, task.TimeoutMinutes*60).Get(claudeCtx, &claudeResult); err != nil {
+			return failedResult(fmt.Sprintf("Failed to run Claude Code: %v", err)), nil
+		}
+
+		if !claudeResult.Success {
+			errMsg := "Claude Code execution failed"
+			if claudeResult.Error != nil {
+				errMsg = *claudeResult.Error
+			}
+			return failedResult(errMsg), nil
+		}
+
+		filesModified = claudeResult.FilesModified
+
+		// 4. Handle clarification if needed (agentic mode only)
+		if claudeResult.NeedsClarification {
+			if task.SlackChannel != nil {
+				msg := fmt.Sprintf("Claude needs clarification for %s:\n\n%s",
+					task.TaskID, *claudeResult.ClarificationQuestion)
+				_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+			}
+
+			status = model.TaskStatusAwaitingApproval
+
+			// Wait for approval or cancellation
+			ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
+				return approved != nil || cancellationRequested
+			})
+			if err != nil || !ok {
+				return failedResult("Timeout waiting for clarification response"), nil
+			}
+			if cancellationRequested {
+				return cancelledResult(), nil
+			}
+		}
+
+		// 5. Human approval for changes (agentic mode only, if required)
+		if task.RequireApproval && len(filesModified) > 0 {
+			status = model.TaskStatusAwaitingApproval
+
+			if task.SlackChannel != nil {
+				// Get changes summary
+				summary := getChangesSummary(ctx, sandbox.ContainerID, task.Repositories)
+				msg := fmt.Sprintf("Claude completed %s. Changes:\n```\n%s\n```\nReply with 'approve' or 'reject'",
+					task.TaskID, summary)
+				_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+			}
+
+			// Wait for approval with 24hr timeout
+			ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
+				return approved != nil || cancellationRequested
+			})
+			if err != nil {
+				return failedResult(fmt.Sprintf("Error waiting for approval: %v", err)), nil
+			}
+			if !ok {
+				signalDone()
+				errMsg := "Approval timeout (24 hours)"
+				duration := workflow.Now(ctx).Sub(startTime).Seconds()
+				return &model.TransformResult{
+					TaskID:          task.TaskID,
+					Status:          model.TaskStatusCancelled,
+					Error:           &errMsg,
+					DurationSeconds: &duration,
+				}, nil
+			}
+			if cancellationRequested {
+				return cancelledResult(), nil
+			}
+			if approved != nil && !*approved {
+				signalDone()
+				errMsg := "Changes rejected"
+				duration := workflow.Now(ctx).Sub(startTime).Seconds()
+				return &model.TransformResult{
+					TaskID:          task.TaskID,
+					Status:          model.TaskStatusCancelled,
+					Error:           &errMsg,
+					DurationSeconds: &duration,
+				}, nil
+			}
 		}
 	}
 
 	// 6. Run verifiers as final gate
-	if len(task.Verifiers) > 0 && len(claudeResult.FilesModified) > 0 {
+	if len(task.Verifiers) > 0 && len(filesModified) > 0 {
 		logger.Info("Running verifiers as final gate")
 
 		verifierOptions := workflow.ActivityOptions{
@@ -304,7 +370,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	status = model.TaskStatusCreatingPRs
 
 	var pullRequests []model.PullRequest
-	prDesc := buildPRDescription(task, claudeResult)
+	prDesc := buildPRDescriptionWithFiles(task, filesModified)
 
 	if task.Parallel && len(task.Repositories) > 1 {
 		// Parallel PR creation for multi-repo tasks
@@ -345,7 +411,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 	signalDone()
 	duration := workflow.Now(ctx).Sub(startTime).Seconds()
 
-	return &model.BugFixResult{
+	return &model.TransformResult{
 		TaskID:          task.TaskID,
 		Status:          model.TaskStatusCompleted,
 		PullRequests:    pullRequests,
@@ -354,7 +420,7 @@ func BugFix(ctx workflow.Context, task model.BugFixTask) (*model.BugFixResult, e
 }
 
 // generateAgentsMD creates the AGENTS.md content for the workspace.
-func generateAgentsMD(task model.BugFixTask) string {
+func generateAgentsMD(task model.TransformTask) string {
 	var sb strings.Builder
 
 	sb.WriteString("# Agent Instructions\n\n")
@@ -385,7 +451,7 @@ func generateAgentsMD(task model.BugFixTask) string {
 }
 
 // buildPrompt creates the prompt for Claude Code.
-func buildPrompt(task model.BugFixTask) string {
+func buildPrompt(task model.TransformTask) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("Task: %s\n\n", task.Title))
@@ -420,8 +486,8 @@ func buildPrompt(task model.BugFixTask) string {
 	return sb.String()
 }
 
-// buildPRDescription creates the PR description.
-func buildPRDescription(task model.BugFixTask, result *model.ClaudeCodeResult) string {
+// buildPRDescriptionWithFiles creates the PR description with a list of modified files.
+func buildPRDescriptionWithFiles(task model.TransformTask, filesModified []string) string {
 	var sb strings.Builder
 
 	sb.WriteString("## Summary\n\n")
@@ -435,10 +501,15 @@ func buildPRDescription(task model.BugFixTask, result *model.ClaudeCodeResult) s
 		sb.WriteString(fmt.Sprintf("**Related ticket:** %s\n\n", *task.TicketURL))
 	}
 
+	// Add transformation mode info
+	if task.TransformMode == model.TransformModeDeterministic {
+		sb.WriteString(fmt.Sprintf("**Transformation:** Deterministic (%s)\n\n", task.TransformImage))
+	}
+
 	sb.WriteString("## Changes\n\n")
-	if result != nil && len(result.FilesModified) > 0 {
+	if len(filesModified) > 0 {
 		sb.WriteString("Modified files:\n")
-		for _, f := range result.FilesModified {
+		for _, f := range filesModified {
 			sb.WriteString(fmt.Sprintf("- `%s`\n", f))
 		}
 	}
@@ -480,7 +551,7 @@ type prResult struct {
 }
 
 // createPRsParallel creates pull requests for all repositories in parallel.
-func createPRsParallel(ctx workflow.Context, task model.BugFixTask, containerID, prDesc string) ([]model.PullRequest, error) {
+func createPRsParallel(ctx workflow.Context, task model.TransformTask, containerID, prDesc string) ([]model.PullRequest, error) {
 	// Create a channel to collect results
 	resultChannel := workflow.NewChannel(ctx)
 

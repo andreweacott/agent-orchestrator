@@ -12,8 +12,8 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/anthropics/claude-code-orchestrator/internal/client"
-	"github.com/anthropics/claude-code-orchestrator/internal/model"
+	"github.com/andreweacott/agent-orchestrator/internal/client"
+	"github.com/andreweacott/agent-orchestrator/internal/model"
 )
 
 // OutputFormat specifies the output format for CLI commands.
@@ -45,6 +45,12 @@ type TaskFile struct {
 	SlackChannel    string `yaml:"slack_channel,omitempty"`
 	RequireApproval *bool  `yaml:"require_approval,omitempty"`
 	Parallel        bool   `yaml:"parallel,omitempty"` // Execute PR creation in parallel
+
+	// Deterministic transformation settings
+	Mode  string            `yaml:"mode,omitempty"`  // "agentic" or "deterministic"
+	Image string            `yaml:"image,omitempty"` // Docker image for deterministic mode
+	Args  []string          `yaml:"args,omitempty"`  // Transform arguments
+	Env   map[string]string `yaml:"env,omitempty"`   // Environment variables
 }
 
 // RepositorySpec is the YAML format for repository configuration.
@@ -128,6 +134,11 @@ func init() {
 	runCmd.Flags().Int("timeout", 30, "Timeout in minutes")
 	runCmd.Flags().Bool("parallel", false, "Execute PR creation in parallel for multi-repo tasks")
 	runCmd.Flags().StringP("output", "o", "table", "Output format (table, json)")
+
+	// Deterministic transformation flags
+	runCmd.Flags().String("image", "", "Docker image for deterministic transformation")
+	runCmd.Flags().StringArray("args", []string{}, "Arguments for transformation container")
+	runCmd.Flags().StringArray("env", []string{}, "Environment variables (KEY=VALUE format)")
 
 	// Status command flags
 	statusCmd.Flags().String("workflow-id", "", "Workflow ID (required)")
@@ -299,7 +310,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	output, _ := cmd.Flags().GetString("output")
 	parallel, _ := cmd.Flags().GetBool("parallel")
 
-	var task model.BugFixTask
+	var task model.TransformTask
 
 	if filePath != "" {
 		// Load from YAML file
@@ -321,11 +332,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 		noApproval, _ := cmd.Flags().GetBool("no-approval")
 		timeout, _ := cmd.Flags().GetInt("timeout")
 
+		// Deterministic transformation flags
+		image, _ := cmd.Flags().GetString("image")
+		transformArgs, _ := cmd.Flags().GetStringArray("args")
+		envVars, _ := cmd.Flags().GetStringArray("env")
+
 		if len(repos) == 0 {
 			return fmt.Errorf("at least one --repo is required (or use --file)")
 		}
-		if prompt == "" {
-			return fmt.Errorf("--prompt is required (or use --file)")
+
+		// Determine transform mode
+		transformMode := model.TransformModeAgentic
+		if image != "" {
+			transformMode = model.TransformModeDeterministic
+		}
+
+		// Validate: either --prompt (agentic) or --image (deterministic) required
+		if transformMode == model.TransformModeAgentic && prompt == "" {
+			return fmt.Errorf("--prompt required (or use --image for deterministic transformation)")
 		}
 
 		// Generate task ID
@@ -340,19 +364,32 @@ func runRun(cmd *cobra.Command, args []string) error {
 		// Parse verifiers
 		parsedVerifiers := parseVerifiers(verifiers)
 
-		task = model.BugFixTask{
+		// Parse environment variables
+		parsedEnv := parseEnvVars(envVars)
+
+		// Use image name as title for deterministic mode if no prompt provided
+		title := prompt
+		if transformMode == model.TransformModeDeterministic && title == "" {
+			title = fmt.Sprintf("Deterministic transformation: %s", image)
+		}
+
+		task = model.TransformTask{
 			TaskID:          taskID,
-			Title:           prompt,
+			Title:           title,
 			Description:     prompt,
 			Repositories:    repositories,
 			Verifiers:       parsedVerifiers,
 			RequireApproval: !noApproval,
 			TimeoutMinutes:  timeout,
 			Parallel:        parallel,
+			TransformMode:   transformMode,
+			TransformImage:  image,
+			TransformArgs:   transformArgs,
+			TransformEnv:    parsedEnv,
 		}
 	}
 
-	workflowID, err := client.StartBugFix(context.Background(), task)
+	workflowID, err := client.StartTransform(context.Background(), task)
 	if err != nil {
 		return fmt.Errorf("failed to start workflow: %w", err)
 	}
@@ -366,7 +403,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 			"verifiers":        len(task.Verifiers),
 			"require_approval": task.RequireApproval,
 			"parallel":         task.Parallel,
+			"transform_mode":   string(task.TransformMode),
 			"url":              fmt.Sprintf("http://localhost:8233/namespaces/default/workflows/%s", workflowID),
+		}
+		if task.TransformMode == model.TransformModeDeterministic {
+			result["transform_image"] = task.TransformImage
 		}
 		data, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Println(string(data))
@@ -376,6 +417,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Starting task...\n")
 	fmt.Printf("  Task ID: %s\n", task.TaskID)
 	fmt.Printf("  Title: %s\n", task.Title)
+	fmt.Printf("  Mode: %s\n", task.TransformMode)
+	if task.TransformMode == model.TransformModeDeterministic {
+		fmt.Printf("  Image: %s\n", task.TransformImage)
+	}
 	fmt.Printf("  Repositories: %d\n", len(task.Repositories))
 	fmt.Printf("  Verifiers: %d\n", len(task.Verifiers))
 	fmt.Printf("  Require approval: %v\n", task.RequireApproval)
@@ -388,7 +433,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 }
 
 // loadTaskFile loads a task from a YAML file.
-func loadTaskFile(path string) (*model.BugFixTask, error) {
+func loadTaskFile(path string) (*model.TransformTask, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
@@ -399,7 +444,7 @@ func loadTaskFile(path string) (*model.BugFixTask, error) {
 		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
 
-	// Convert to BugFixTask
+	// Convert to TransformTask
 	var repos []model.Repository
 	for _, r := range tf.Repositories {
 		branch := r.Branch
@@ -436,15 +481,31 @@ func loadTaskFile(path string) (*model.BugFixTask, error) {
 		requireApproval = *tf.RequireApproval
 	}
 
-	task := &model.BugFixTask{
+	// Determine transform mode
+	transformMode := model.TransformModeAgentic
+	if tf.Mode == "deterministic" || tf.Image != "" {
+		transformMode = model.TransformModeDeterministic
+	}
+
+	// Use image name as title for deterministic mode if no title provided
+	title := tf.Title
+	if transformMode == model.TransformModeDeterministic && title == "" {
+		title = fmt.Sprintf("Deterministic transformation: %s", tf.Image)
+	}
+
+	task := &model.TransformTask{
 		TaskID:          tf.ID,
-		Title:           tf.Title,
+		Title:           title,
 		Description:     tf.Description,
 		Repositories:    repos,
 		Verifiers:       verifiers,
 		RequireApproval: requireApproval,
 		TimeoutMinutes:  timeout,
 		Parallel:        tf.Parallel,
+		TransformMode:   transformMode,
+		TransformImage:  tf.Image,
+		TransformArgs:   tf.Args,
+		TransformEnv:    tf.Env,
 	}
 
 	if tf.TicketURL != "" {
@@ -470,6 +531,18 @@ func parseVerifiers(verifierStrs []string) []model.Verifier {
 		}
 	}
 	return verifiers
+}
+
+// parseEnvVars parses environment variable strings in "KEY=VALUE" format.
+func parseEnvVars(envStrs []string) map[string]string {
+	env := make(map[string]string)
+	for _, e := range envStrs {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			env[parts[0]] = parts[1]
+		}
+	}
+	return env
 }
 
 func main() {

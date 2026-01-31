@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/testsuite"
 
-	"github.com/anthropics/claude-code-orchestrator/internal/model"
+	"github.com/andreweacott/agent-orchestrator/internal/model"
 )
 
 // MockActivities holds mock implementations of activities
@@ -70,14 +70,30 @@ func (m *MockActivities) NotifySlack(ctx context.Context, channel, message strin
 	return args.Get(0).(*string), args.Error(1)
 }
 
-type BugFixWorkflowTestSuite struct {
+func (m *MockActivities) ExecuteDeterministic(ctx context.Context, sandbox model.SandboxInfo, image string, args []string, env map[string]string, repos []model.Repository) (*model.DeterministicResult, error) {
+	a := m.Called(ctx, sandbox, image, args, env, repos)
+	if a.Get(0) == nil {
+		return nil, a.Error(1)
+	}
+	return a.Get(0).(*model.DeterministicResult), a.Error(1)
+}
+
+func (m *MockActivities) RunVerifiers(ctx context.Context, sandbox model.SandboxInfo, repos []model.Repository, verifiers []model.Verifier) (*model.VerifiersResult, error) {
+	a := m.Called(ctx, sandbox, repos, verifiers)
+	if a.Get(0) == nil {
+		return nil, a.Error(1)
+	}
+	return a.Get(0).(*model.VerifiersResult), a.Error(1)
+}
+
+type TransformWorkflowTestSuite struct {
 	suite.Suite
 	testsuite.WorkflowTestSuite
 	env            *testsuite.TestWorkflowEnvironment
 	mockActivities *MockActivities
 }
 
-func (s *BugFixWorkflowTestSuite) SetupTest() {
+func (s *TransformWorkflowTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
 	s.mockActivities = &MockActivities{}
 
@@ -89,13 +105,15 @@ func (s *BugFixWorkflowTestSuite) SetupTest() {
 	s.env.RegisterActivity(s.mockActivities.GetClaudeOutput)
 	s.env.RegisterActivity(s.mockActivities.CreatePullRequest)
 	s.env.RegisterActivity(s.mockActivities.NotifySlack)
+	s.env.RegisterActivity(s.mockActivities.ExecuteDeterministic)
+	s.env.RegisterActivity(s.mockActivities.RunVerifiers)
 }
 
-func (s *BugFixWorkflowTestSuite) TearDownTest() {
+func (s *TransformWorkflowTestSuite) TearDownTest() {
 	s.env.AssertExpectations(s.T())
 }
 
-func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowSuccess() {
+func (s *TransformWorkflowTestSuite) TestTransformWorkflowSuccess() {
 	// Setup mock expectations
 	s.mockActivities.On("ProvisionSandbox", mock.Anything, "test-123").
 		Return(&model.SandboxInfo{
@@ -126,7 +144,7 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowSuccess() {
 	s.mockActivities.On("CleanupSandbox", mock.Anything, "container-abc").
 		Return(nil)
 
-	task := model.BugFixTask{
+	task := model.TransformTask{
 		TaskID:      "test-123",
 		Title:       "Test bug fix",
 		Description: "Fix the test bug",
@@ -137,12 +155,12 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowSuccess() {
 		TimeoutMinutes:  30,
 	}
 
-	s.env.ExecuteWorkflow(BugFix, task)
+	s.env.ExecuteWorkflow(Transform, task)
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 
-	var result model.BugFixResult
+	var result model.TransformResult
 	s.NoError(s.env.GetWorkflowResult(&result))
 
 	s.Equal(model.TaskStatusCompleted, result.Status)
@@ -150,7 +168,7 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowSuccess() {
 	s.Equal(1, result.PullRequests[0].PRNumber)
 }
 
-func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowWithApproval() {
+func (s *TransformWorkflowTestSuite) TestTransformWorkflowWithApproval() {
 	// Setup mock expectations
 	s.mockActivities.On("ProvisionSandbox", mock.Anything, "test-456").
 		Return(&model.SandboxInfo{
@@ -181,7 +199,7 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowWithApproval() {
 	s.mockActivities.On("CleanupSandbox", mock.Anything, "container-def").
 		Return(nil)
 
-	task := model.BugFixTask{
+	task := model.TransformTask{
 		TaskID:      "test-456",
 		Title:       "Test with approval",
 		Description: "Need approval",
@@ -197,17 +215,17 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowWithApproval() {
 		s.env.SignalWorkflow(SignalApprove, nil)
 	}, 5*time.Second)
 
-	s.env.ExecuteWorkflow(BugFix, task)
+	s.env.ExecuteWorkflow(Transform, task)
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 
-	var result model.BugFixResult
+	var result model.TransformResult
 	s.NoError(s.env.GetWorkflowResult(&result))
 	s.Equal(model.TaskStatusCompleted, result.Status)
 }
 
-func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowRejection() {
+func (s *TransformWorkflowTestSuite) TestTransformWorkflowRejection() {
 	// Setup mock expectations
 	s.mockActivities.On("ProvisionSandbox", mock.Anything, "test-789").
 		Return(&model.SandboxInfo{
@@ -229,7 +247,7 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowRejection() {
 	s.mockActivities.On("CleanupSandbox", mock.Anything, "container-ghi").
 		Return(nil)
 
-	task := model.BugFixTask{
+	task := model.TransformTask{
 		TaskID:      "test-789",
 		Title:       "Test rejection",
 		Description: "This will be rejected",
@@ -245,17 +263,17 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowRejection() {
 		s.env.SignalWorkflow(SignalReject, nil)
 	}, 5*time.Second)
 
-	s.env.ExecuteWorkflow(BugFix, task)
+	s.env.ExecuteWorkflow(Transform, task)
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 
-	var result model.BugFixResult
+	var result model.TransformResult
 	s.NoError(s.env.GetWorkflowResult(&result))
 	s.Equal(model.TaskStatusCancelled, result.Status)
 }
 
-func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowFailure() {
+func (s *TransformWorkflowTestSuite) TestTransformWorkflowFailure() {
 	// Setup mock expectations - Claude Code fails
 	s.mockActivities.On("ProvisionSandbox", mock.Anything, "test-fail").
 		Return(&model.SandboxInfo{
@@ -278,7 +296,7 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowFailure() {
 	s.mockActivities.On("CleanupSandbox", mock.Anything, "container-fail").
 		Return(nil)
 
-	task := model.BugFixTask{
+	task := model.TransformTask{
 		TaskID:      "test-fail",
 		Title:       "Test failure",
 		Description: "This will fail",
@@ -289,17 +307,176 @@ func (s *BugFixWorkflowTestSuite) TestBugFixWorkflowFailure() {
 		TimeoutMinutes:  30,
 	}
 
-	s.env.ExecuteWorkflow(BugFix, task)
+	s.env.ExecuteWorkflow(Transform, task)
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 
-	var result model.BugFixResult
+	var result model.TransformResult
 	s.NoError(s.env.GetWorkflowResult(&result))
 	s.Equal(model.TaskStatusFailed, result.Status)
 	s.NotNil(result.Error)
 }
 
-func TestBugFixWorkflowTestSuite(t *testing.T) {
-	suite.Run(t, new(BugFixWorkflowTestSuite))
+func (s *TransformWorkflowTestSuite) TestDeterministicTransformationSuccess() {
+	// Setup mock expectations for deterministic transformation
+	s.mockActivities.On("ProvisionSandbox", mock.Anything, "test-det-001").
+		Return(&model.SandboxInfo{
+			ContainerID:   "container-det-001",
+			WorkspacePath: "/workspace",
+			CreatedAt:     time.Now(),
+		}, nil)
+
+	s.mockActivities.On("CloneRepositories", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]string{"/workspace/test-repo"}, nil)
+
+	s.mockActivities.On("ExecuteDeterministic", mock.Anything, mock.Anything, "my-transform:latest", []string{"--fix"}, map[string]string{"DEBUG": "1"}, mock.Anything).
+		Return(&model.DeterministicResult{
+			Success:       true,
+			ExitCode:      0,
+			Output:        "Applied 3 transformations",
+			FilesModified: []string{"test-repo/src/main.go", "test-repo/src/utils.go"},
+		}, nil)
+
+	s.mockActivities.On("CreatePullRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&model.PullRequest{
+			RepoName:   "test-repo",
+			PRURL:      "https://github.com/org/test-repo/pull/10",
+			PRNumber:   10,
+			BranchName: "fix/claude-test-det-001",
+			Title:      "fix: Deterministic transform",
+		}, nil)
+
+	s.mockActivities.On("CleanupSandbox", mock.Anything, "container-det-001").
+		Return(nil)
+
+	task := model.TransformTask{
+		TaskID:      "test-det-001",
+		Title:       "Deterministic transform",
+		Description: "Apply automated fix",
+		Repositories: []model.Repository{
+			{URL: "https://github.com/org/test-repo.git", Branch: "main", Name: "test-repo"},
+		},
+		RequireApproval: false,
+		TimeoutMinutes:  30,
+		TransformMode:   model.TransformModeDeterministic,
+		TransformImage:  "my-transform:latest",
+		TransformArgs:   []string{"--fix"},
+		TransformEnv:    map[string]string{"DEBUG": "1"},
+	}
+
+	s.env.ExecuteWorkflow(Transform, task)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+
+	var result model.TransformResult
+	s.NoError(s.env.GetWorkflowResult(&result))
+
+	s.Equal(model.TaskStatusCompleted, result.Status)
+	s.Len(result.PullRequests, 1)
+	s.Equal(10, result.PullRequests[0].PRNumber)
+}
+
+func (s *TransformWorkflowTestSuite) TestDeterministicTransformationNoChanges() {
+	// Setup mock expectations - transformation makes no changes
+	s.mockActivities.On("ProvisionSandbox", mock.Anything, "test-det-002").
+		Return(&model.SandboxInfo{
+			ContainerID:   "container-det-002",
+			WorkspacePath: "/workspace",
+			CreatedAt:     time.Now(),
+		}, nil)
+
+	s.mockActivities.On("CloneRepositories", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]string{"/workspace/test-repo"}, nil)
+
+	s.mockActivities.On("ExecuteDeterministic", mock.Anything, mock.Anything, "my-transform:latest", mock.Anything, mock.Anything, mock.Anything).
+		Return(&model.DeterministicResult{
+			Success:       true,
+			ExitCode:      0,
+			Output:        "No changes needed",
+			FilesModified: []string{}, // No files modified
+		}, nil)
+
+	s.mockActivities.On("CleanupSandbox", mock.Anything, "container-det-002").
+		Return(nil)
+
+	task := model.TransformTask{
+		TaskID:      "test-det-002",
+		Title:       "No-op transform",
+		Description: "Nothing to change",
+		Repositories: []model.Repository{
+			{URL: "https://github.com/org/test-repo.git", Branch: "main", Name: "test-repo"},
+		},
+		RequireApproval: false,
+		TimeoutMinutes:  30,
+		TransformMode:   model.TransformModeDeterministic,
+		TransformImage:  "my-transform:latest",
+	}
+
+	s.env.ExecuteWorkflow(Transform, task)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+
+	var result model.TransformResult
+	s.NoError(s.env.GetWorkflowResult(&result))
+
+	// Should complete successfully but with no PRs
+	s.Equal(model.TaskStatusCompleted, result.Status)
+	s.Len(result.PullRequests, 0)
+}
+
+func (s *TransformWorkflowTestSuite) TestDeterministicTransformationFailure() {
+	// Setup mock expectations - transformation fails with non-zero exit
+	s.mockActivities.On("ProvisionSandbox", mock.Anything, "test-det-003").
+		Return(&model.SandboxInfo{
+			ContainerID:   "container-det-003",
+			WorkspacePath: "/workspace",
+			CreatedAt:     time.Now(),
+		}, nil)
+
+	s.mockActivities.On("CloneRepositories", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]string{"/workspace/test-repo"}, nil)
+
+	errMsg := "transformation exited with code 1"
+	s.mockActivities.On("ExecuteDeterministic", mock.Anything, mock.Anything, "failing-transform:latest", mock.Anything, mock.Anything, mock.Anything).
+		Return(&model.DeterministicResult{
+			Success:  false,
+			ExitCode: 1,
+			Output:   "Error: invalid input",
+			Error:    &errMsg,
+		}, nil)
+
+	s.mockActivities.On("CleanupSandbox", mock.Anything, "container-det-003").
+		Return(nil)
+
+	task := model.TransformTask{
+		TaskID:      "test-det-003",
+		Title:       "Failing transform",
+		Description: "This will fail",
+		Repositories: []model.Repository{
+			{URL: "https://github.com/org/test-repo.git", Branch: "main", Name: "test-repo"},
+		},
+		RequireApproval: false,
+		TimeoutMinutes:  30,
+		TransformMode:   model.TransformModeDeterministic,
+		TransformImage:  "failing-transform:latest",
+	}
+
+	s.env.ExecuteWorkflow(Transform, task)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+
+	var result model.TransformResult
+	s.NoError(s.env.GetWorkflowResult(&result))
+
+	s.Equal(model.TaskStatusFailed, result.Status)
+	s.NotNil(result.Error)
+	s.Contains(*result.Error, "transformation exited with code 1")
+}
+
+func TestTransformWorkflowTestSuite(t *testing.T) {
+	suite.Run(t, new(TransformWorkflowTestSuite))
 }

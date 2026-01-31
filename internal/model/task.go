@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TaskStatus represents the status of a bug fix task.
+// TaskStatus represents the status of a transformation task.
 type TaskStatus string
 
 const (
@@ -19,6 +19,14 @@ const (
 	TaskStatusCompleted        TaskStatus = "completed"
 	TaskStatusFailed           TaskStatus = "failed"
 	TaskStatusCancelled        TaskStatus = "cancelled"
+)
+
+// TransformMode specifies the transformation execution mode.
+type TransformMode string
+
+const (
+	TransformModeAgentic       TransformMode = "agentic"       // Claude Code (default)
+	TransformModeDeterministic TransformMode = "deterministic" // Docker image execution
 )
 
 // Repository represents a repository to clone into the sandbox.
@@ -71,8 +79,8 @@ func extractRepoName(url string) string {
 	return name
 }
 
-// BugFixTask is the input for the BugFixWorkflow.
-type BugFixTask struct {
+// TransformTask is the input for the Transform workflow.
+type TransformTask struct {
 	TaskID       string       `json:"task_id"`
 	Title        string       `json:"title"`
 	Description  string       `json:"description"`
@@ -88,11 +96,18 @@ type BugFixTask struct {
 	TimeoutMinutes  int  `json:"timeout_minutes"`
 	RequireApproval bool `json:"require_approval"`
 	Parallel        bool `json:"parallel"` // Execute PR creation in parallel for multi-repo tasks
+
+	// Transformation mode settings
+	TransformMode  TransformMode     `json:"transform_mode"`            // "agentic" or "deterministic"
+	TransformImage string            `json:"transform_image,omitempty"` // Docker image for deterministic mode
+	TransformArgs  []string          `json:"transform_args,omitempty"`  // Args passed to transform container
+	TransformEnv   map[string]string `json:"transform_env,omitempty"`   // Environment variables
 }
 
-// NewBugFixTask creates a BugFixTask with default values.
-func NewBugFixTask(taskID, title, description string, repos []Repository) BugFixTask {
-	return BugFixTask{
+// NewTransformTask creates a TransformTask with default values.
+// Note: TransformMode defaults to empty; the workflow defaults to TransformModeAgentic if not set.
+func NewTransformTask(taskID, title, description string, repos []Repository) TransformTask {
+	return TransformTask{
 		TaskID:          taskID,
 		Title:           title,
 		Description:     description,
@@ -128,6 +143,15 @@ type ClaudeCodeResult struct {
 	ClarificationQuestion *string  `json:"clarification_question,omitempty"`
 }
 
+// DeterministicResult is the result from running a deterministic transformation.
+type DeterministicResult struct {
+	Success       bool     `json:"success"`
+	ExitCode      int      `json:"exit_code"`
+	Output        string   `json:"output"`
+	FilesModified []string `json:"files_modified"`
+	Error         *string  `json:"error,omitempty"`
+}
+
 // VerifierResult is the result of running a single verifier.
 type VerifierResult struct {
 	Name     string `json:"name"`
@@ -152,8 +176,8 @@ type PullRequest struct {
 	Title      string `json:"title"`
 }
 
-// BugFixResult is the final result of the BugFixWorkflow.
-type BugFixResult struct {
+// TransformResult is the final result of the Transform workflow.
+type TransformResult struct {
 	TaskID          string        `json:"task_id"`
 	Status          TaskStatus    `json:"status"`
 	PullRequests    []PullRequest `json:"pull_requests"`
@@ -161,9 +185,9 @@ type BugFixResult struct {
 	DurationSeconds *float64      `json:"duration_seconds,omitempty"`
 }
 
-// NewBugFixResult creates a BugFixResult with the given status.
-func NewBugFixResult(taskID string, status TaskStatus) BugFixResult {
-	return BugFixResult{
+// NewTransformResult creates a TransformResult with the given status.
+func NewTransformResult(taskID string, status TaskStatus) TransformResult {
+	return TransformResult{
 		TaskID:       taskID,
 		Status:       status,
 		PullRequests: []PullRequest{},
@@ -171,19 +195,19 @@ func NewBugFixResult(taskID string, status TaskStatus) BugFixResult {
 }
 
 // WithError returns a copy of the result with an error message.
-func (r BugFixResult) WithError(err string) BugFixResult {
+func (r TransformResult) WithError(err string) TransformResult {
 	r.Error = &err
 	return r
 }
 
 // WithDuration returns a copy of the result with a duration.
-func (r BugFixResult) WithDuration(seconds float64) BugFixResult {
+func (r TransformResult) WithDuration(seconds float64) TransformResult {
 	r.DurationSeconds = &seconds
 	return r
 }
 
 // WithPullRequests returns a copy of the result with pull requests.
-func (r BugFixResult) WithPullRequests(prs []PullRequest) BugFixResult {
+func (r TransformResult) WithPullRequests(prs []PullRequest) TransformResult {
 	r.PullRequests = prs
 	return r
 }

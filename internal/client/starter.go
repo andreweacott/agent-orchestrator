@@ -10,11 +10,11 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
-	"github.com/anthropics/claude-code-orchestrator/internal/model"
-	"github.com/anthropics/claude-code-orchestrator/internal/workflow"
+	"github.com/andreweacott/agent-orchestrator/internal/model"
+	"github.com/andreweacott/agent-orchestrator/internal/workflow"
 )
 
-// TaskQueue is the default task queue for bug fix workflows.
+// TaskQueue is the default task queue for transform workflows.
 const TaskQueue = "claude-code-tasks"
 
 // WorkflowTimeoutBuffer is minutes added to task timeout for setup/cleanup.
@@ -57,9 +57,9 @@ func (c *Client) Close() {
 	c.temporal.Close()
 }
 
-// StartBugFix starts a new bug fix workflow.
-func (c *Client) StartBugFix(ctx context.Context, task model.BugFixTask) (string, error) {
-	workflowID := fmt.Sprintf("bug-fix-%s", task.TaskID)
+// StartTransform starts a new transform workflow.
+func (c *Client) StartTransform(ctx context.Context, task model.TransformTask) (string, error) {
+	workflowID := fmt.Sprintf("transform-%s", task.TaskID)
 
 	// Calculate workflow timeout: task timeout + buffer for setup/cleanup
 	workflowTimeout := time.Duration(task.TimeoutMinutes+WorkflowTimeoutBuffer) * time.Minute
@@ -70,7 +70,7 @@ func (c *Client) StartBugFix(ctx context.Context, task model.BugFixTask) (string
 		WorkflowExecutionTimeout: workflowTimeout,
 	}
 
-	we, err := c.temporal.ExecuteWorkflow(ctx, options, workflow.BugFix, task)
+	we, err := c.temporal.ExecuteWorkflow(ctx, options, workflow.Transform, task)
 	if err != nil {
 		return "", fmt.Errorf("failed to start workflow: %w", err)
 	}
@@ -94,10 +94,10 @@ func (c *Client) GetWorkflowStatus(ctx context.Context, workflowID string) (mode
 }
 
 // GetWorkflowResult waits for and returns the workflow result.
-func (c *Client) GetWorkflowResult(ctx context.Context, workflowID string) (*model.BugFixResult, error) {
+func (c *Client) GetWorkflowResult(ctx context.Context, workflowID string) (*model.TransformResult, error) {
 	run := c.temporal.GetWorkflow(ctx, workflowID, "")
 
-	var result model.BugFixResult
+	var result model.TransformResult
 	if err := run.Get(ctx, &result); err != nil {
 		return nil, fmt.Errorf("failed to get workflow result: %w", err)
 	}
@@ -131,7 +131,7 @@ type WorkflowInfo struct {
 // ListWorkflows lists workflows matching the given status filter with pagination.
 // If limit is 0, all matching workflows are returned.
 func (c *Client) ListWorkflows(ctx context.Context, statusFilter string, limit int) ([]WorkflowInfo, error) {
-	query := `WorkflowType = "BugFix"`
+	query := `WorkflowType = "Transform"`
 	if statusFilter != "" {
 		if !validWorkflowStatuses[statusFilter] {
 			return nil, fmt.Errorf("invalid status filter: %q (valid: Running, Completed, Failed, Canceled, Terminated, TimedOut)", statusFilter)
@@ -178,14 +178,14 @@ func (c *Client) ListWorkflows(ctx context.Context, statusFilter string, limit i
 // Deprecated: For multiple operations, prefer creating a Client with NewClient()
 // and reusing it to reduce connection overhead.
 
-// StartBugFix starts a new bug fix workflow (standalone version).
-func StartBugFix(ctx context.Context, task model.BugFixTask) (string, error) {
+// StartTransform starts a new transform workflow (standalone version).
+func StartTransform(ctx context.Context, task model.TransformTask) (string, error) {
 	c, err := NewClient()
 	if err != nil {
 		return "", err
 	}
 	defer c.Close()
-	return c.StartBugFix(ctx, task)
+	return c.StartTransform(ctx, task)
 }
 
 // GetWorkflowStatus queries the status of a workflow (standalone version).
@@ -199,7 +199,7 @@ func GetWorkflowStatus(ctx context.Context, workflowID string) (model.TaskStatus
 }
 
 // GetWorkflowResult waits for and returns the workflow result (standalone version).
-func GetWorkflowResult(ctx context.Context, workflowID string) (*model.BugFixResult, error) {
+func GetWorkflowResult(ctx context.Context, workflowID string) (*model.TransformResult, error) {
 	c, err := NewClient()
 	if err != nil {
 		return nil, err

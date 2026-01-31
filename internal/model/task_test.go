@@ -41,12 +41,12 @@ func TestNewRepository(t *testing.T) {
 	assert.Equal(t, "my-repo", repo.Name)
 }
 
-func TestNewBugFixTask(t *testing.T) {
+func TestNewTransformTask(t *testing.T) {
 	repos := []Repository{
 		NewRepository("https://github.com/org/repo.git", "", ""),
 	}
 
-	task := NewBugFixTask("task-123", "Fix bug", "Description", repos)
+	task := NewTransformTask("task-123", "Fix bug", "Description", repos)
 
 	assert.Equal(t, "task-123", task.TaskID)
 	assert.Equal(t, "Fix bug", task.Title)
@@ -59,9 +59,9 @@ func TestNewBugFixTask(t *testing.T) {
 	assert.Nil(t, task.SlackChannel)
 }
 
-func TestBugFixTaskJSON(t *testing.T) {
+func TestTransformTaskJSON(t *testing.T) {
 	slackChannel := "#dev"
-	task := BugFixTask{
+	task := TransformTask{
 		TaskID:      "task-123",
 		Title:       "Fix bug",
 		Description: "Fix the bug in login",
@@ -78,7 +78,7 @@ func TestBugFixTaskJSON(t *testing.T) {
 	require.NoError(t, err)
 
 	// Unmarshal back
-	var decoded BugFixTask
+	var decoded TransformTask
 	err = json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
 
@@ -88,8 +88,8 @@ func TestBugFixTaskJSON(t *testing.T) {
 	assert.Equal(t, "#dev", *decoded.SlackChannel)
 }
 
-func TestBugFixResult(t *testing.T) {
-	result := NewBugFixResult("task-123", TaskStatusCompleted)
+func TestTransformResult(t *testing.T) {
+	result := NewTransformResult("task-123", TaskStatusCompleted)
 	assert.Equal(t, "task-123", result.TaskID)
 	assert.Equal(t, TaskStatusCompleted, result.Status)
 	assert.Empty(t, result.PullRequests)

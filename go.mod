@@ -1,4 +1,4 @@
-module github.com/anthropics/claude-code-orchestrator
+module github.com/andreweacott/agent-orchestrator
 
 go 1.22.0
 

@@ -8,10 +8,10 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/anthropics/claude-code-orchestrator/internal/activity"
-	internalclient "github.com/anthropics/claude-code-orchestrator/internal/client"
-	"github.com/anthropics/claude-code-orchestrator/internal/docker"
-	"github.com/anthropics/claude-code-orchestrator/internal/workflow"
+	"github.com/andreweacott/agent-orchestrator/internal/activity"
+	internalclient "github.com/andreweacott/agent-orchestrator/internal/client"
+	"github.com/andreweacott/agent-orchestrator/internal/docker"
+	"github.com/andreweacott/agent-orchestrator/internal/workflow"
 )
 
 func main() {
@@ -51,6 +51,7 @@ func main() {
 	// Create activities
 	sandboxActivities := activity.NewSandboxActivities(dockerClient)
 	claudeActivities := activity.NewClaudeCodeActivities(dockerClient)
+	deterministicActivities := activity.NewDeterministicActivities(dockerClient)
 	githubActivities := activity.NewGitHubActivities(dockerClient)
 	slackActivities := activity.NewSlackActivities()
 
@@ -58,7 +59,7 @@ func main() {
 	w := worker.New(c, internalclient.TaskQueue, worker.Options{})
 
 	// Register workflow
-	w.RegisterWorkflow(workflow.BugFix)
+	w.RegisterWorkflow(workflow.Transform)
 
 	// Register activities
 	w.RegisterActivity(sandboxActivities.ProvisionSandbox)
@@ -67,6 +68,7 @@ func main() {
 	w.RegisterActivity(sandboxActivities.RunVerifiers)
 	w.RegisterActivity(claudeActivities.RunClaudeCode)
 	w.RegisterActivity(claudeActivities.GetClaudeOutput)
+	w.RegisterActivity(deterministicActivities.ExecuteDeterministic)
 	w.RegisterActivity(githubActivities.CreatePullRequest)
 	w.RegisterActivity(slackActivities.NotifySlack)
 

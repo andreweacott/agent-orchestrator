@@ -9,8 +9,8 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"github.com/anthropics/claude-code-orchestrator/internal/docker"
-	"github.com/anthropics/claude-code-orchestrator/internal/model"
+	"github.com/andreweacott/agent-orchestrator/internal/docker"
+	"github.com/andreweacott/agent-orchestrator/internal/model"
 )
 
 const (

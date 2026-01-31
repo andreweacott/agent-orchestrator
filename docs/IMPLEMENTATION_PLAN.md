@@ -2,10 +2,10 @@
 
 Incremental implementation phases for the code transformation platform.
 
-> **Last Updated**: 2026-01-31 (Phase 2 Complete)
+> **Last Updated**: 2026-01-31 (Phase 3 Complete)
 >
-> **Note**: Current implementation uses `BugFixTask`/`BugFixWorkflow` naming. The design document
-> describes a more generic `Task`/`Transformation` model. Consider refactoring to align with design.
+> **Note**: Implementation uses `TransformTask`/`Transform` workflow naming, aligned with the
+> generic transformation model in the design document.
 
 ---
 
@@ -22,11 +22,11 @@ Incremental implementation phases for the code transformation platform.
 
 ### 1.2 Data Model
 
-- [x] Define `Task` struct *(implemented as `BugFixTask`)*
+- [x] Define `Task` struct *(implemented as `TransformTask`)*
 - [x] Define `RepositoryTarget` struct *(implemented as `Repository` with Setup field)*
-- [x] Define `Transformation` (Agentic only for now) *(prompt embedded in BugFixTask)*
+- [x] Define `Transformation` (Agentic only for now) *(prompt embedded in TransformTask)*
 - [x] Define `Verifier` struct *(with VerifierResult, VerifiersResult)*
-- [x] Define `TaskResult` and `RepositoryResult` *(implemented as `BugFixResult`, `ClaudeCodeResult`)*
+- [x] Define `TaskResult` and `RepositoryResult` *(implemented as `TransformResult`, `ClaudeCodeResult`)*
 
 ### 1.3 Docker Sandbox Provider
 
@@ -39,7 +39,7 @@ Incremental implementation phases for the code transformation platform.
 ### 1.4 Temporal Workflow (Basic)
 
 - [x] Set up local Temporal server (docker-compose) *(docker-compose.yaml with Postgres)*
-- [x] Implement `ExecuteTask` workflow *(implemented as `BugFix` workflow)*
+- [x] Implement `ExecuteTask` workflow *(implemented as `Transform` workflow)*
 - [x] Implement activities:
   - [x] `ProvisionSandbox`
   - [x] `CloneRepository` *(implemented as `CloneRepositories` with setup)*
@@ -99,7 +99,7 @@ orchestrator run \
 ### 2.3 Task Result Improvements
 
 - [x] Track files modified *(in ClaudeCodeResult.FilesModified)*
-- [x] Include PR URLs in result *(in BugFixResult.PullRequests)*
+- [x] Include PR URLs in result *(in TransformResult.PullRequests)*
 - [x] Better error reporting
 
 ### 2.4 CLI Enhancements
@@ -127,22 +127,31 @@ orchestrator run \
 
 ### 3.1 Deterministic Transform Execution
 
-- [ ] `ExecuteDeterministic` activity
-- [ ] Pull transformation image
-- [ ] Mount workspace into transformation container
-- [ ] Run transformation
-- [ ] Capture output/errors
+- [x] `ExecuteDeterministic` activity *(new `internal/activity/deterministic.go`)*
+- [x] Pull transformation image *(via docker run in sandbox)*
+- [x] Mount workspace into transformation container *(bind mount at /workspace)*
+- [x] Run transformation
+- [x] Capture output/errors
+- [x] Detect modified files via `git status --porcelain`
 
 ### 3.2 CLI Support
 
-- [ ] `--image` flag for deterministic mode
-- [ ] `--args` flag for transformation arguments
-- [ ] `--env` flag for environment variables
+- [x] `--image` flag for deterministic mode
+- [x] `--args` flag for transformation arguments
+- [x] `--env` flag for environment variables
+- [x] YAML task file support (`mode`, `image`, `args`, `env` fields)
 
 ### 3.3 Validation
 
-- [ ] Run verifiers after deterministic transform
-- [ ] Skip PR if no changes detected
+- [x] Run verifiers after deterministic transform
+- [x] Skip PR if no changes detected *(returns success with empty PR list)*
+- [x] Skip human approval for deterministic mode *(pre-vetted transforms)*
+
+### 3.4 Data Model
+
+- [x] `TransformMode` type (`agentic`, `deterministic`)
+- [x] `DeterministicResult` struct
+- [x] New `TransformTask` fields: `TransformMode`, `TransformImage`, `TransformArgs`, `TransformEnv`
 
 ### Deliverable
 
@@ -150,7 +159,25 @@ orchestrator run \
 orchestrator run \
   --repo https://github.com/org/service.git \
   --image openrewrite/rewrite:latest \
-  --args "rewrite:run -Drewrite.activeRecipes=org.openrewrite.java.logging.log4j.Log4j1ToLog4j2"
+  --args "rewrite:run" \
+  --args "-Drewrite.activeRecipes=org.openrewrite.java.logging.log4j.Log4j1ToLog4j2" \
+  --verifier "build:mvn compile"
+```
+
+Or via YAML:
+```yaml
+id: openrewrite-migration
+title: Migrate Log4j 1.x to 2.x
+mode: deterministic
+image: openrewrite/rewrite:latest
+args:
+  - "rewrite:run"
+  - "-Drewrite.activeRecipes=org.openrewrite.java.logging.log4j.Log4j1ToLog4j2"
+repositories:
+  - url: https://github.com/org/service.git
+verifiers:
+  - name: build
+    command: ["mvn", "compile"]
 ```
 
 ---
@@ -422,7 +449,7 @@ Production-ready deployment with:
 |-------|-------|-----------------|--------|
 | 1 | Local MVP | Single-repo agentic task with Docker | ✅ Complete |
 | 2 | PR Creation | Multi-repo with GitHub PRs | ✅ Complete |
-| 3 | Deterministic | Docker-based transformations | ⬜ Not started |
+| 3 | Deterministic | Docker-based transformations | ✅ Complete |
 | 4 | Configuration | Profiles and external config | ⬜ Not started |
 | 5 | Kubernetes | K8s sandbox provider | ⬜ Not started |
 | 6 | Agent Sandbox | Production isolation with warm pools | ⬜ Not started |
@@ -433,6 +460,6 @@ Each phase builds on the previous and delivers working functionality.
 
 ### Recommended Next Steps
 
-1. **Phase 3** - Add deterministic transformation support (Docker images like OpenRewrite)
-2. **Phase 4** - Add configuration file and sandbox profiles
-3. **Phase 8.2** - Iterative HITL steering (high value for usability)
+1. **Phase 4** - Add configuration file and sandbox profiles
+2. **Phase 8.2** - Iterative HITL steering (high value for usability)
+3. **Phase 5** - Kubernetes sandbox provider for production
