@@ -210,6 +210,180 @@ issues:
 	}
 }
 
+func TestCollectReportTargetNameValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetName string
+		wantError  string
+	}{
+		{
+			name:       "path traversal attempt with ../",
+			targetName: "../../../etc/passwd",
+			wantError:  "invalid target name",
+		},
+		{
+			name:       "path traversal attempt with parent dir",
+			targetName: "..%2F..%2Fetc",
+			wantError:  "invalid target name",
+		},
+		{
+			name:       "target with slash",
+			targetName: "foo/bar",
+			wantError:  "invalid target name",
+		},
+		{
+			name:       "target with space",
+			targetName: "foo bar",
+			wantError:  "invalid target name",
+		},
+		{
+			name:       "target with special chars",
+			targetName: "foo@bar!baz",
+			wantError:  "invalid target name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestActivityEnvironment()
+
+			// Provider that should never be called
+			provider := &mockProvider{
+				copyFromFunc: func(_ context.Context, _, _ string) (io.ReadCloser, error) {
+					t.Fatal("CopyFrom should not be called for invalid target names")
+					return nil, nil
+				},
+			}
+			activities := NewReportActivities(provider)
+			env.RegisterActivity(activities.CollectReport)
+
+			input := CollectReportInput{
+				ContainerID: "test-container",
+				RepoName:    "test-repo",
+				TargetName:  tt.targetName,
+			}
+
+			result, err := env.ExecuteActivity(activities.CollectReport, input)
+			require.NoError(t, err)
+
+			var report *model.ReportOutput
+			require.NoError(t, result.Get(&report))
+			require.NotNil(t, report)
+
+			assert.Contains(t, report.Error, tt.wantError)
+		})
+	}
+}
+
+func TestCollectReportWithTargetName(t *testing.T) {
+	tests := []struct {
+		name             string
+		repoName         string
+		targetName       string
+		expectedPath     string
+		copyFromFunc     func(ctx context.Context, id, path string) (io.ReadCloser, error)
+		wantFrontmatter  map[string]any
+		wantBodyContains string
+	}{
+		{
+			name:         "collect report for specific target",
+			repoName:     "my-service",
+			targetName:   "users-api",
+			expectedPath: "/workspace/my-service/REPORT-users-api.md",
+			copyFromFunc: func(_ context.Context, _, path string) (io.ReadCloser, error) {
+				if path != "/workspace/my-service/REPORT-users-api.md" {
+					return nil, errors.New("unexpected path: " + path)
+				}
+				content := []byte(`---
+endpoint: users-api
+score: 8
+---
+
+# Users API Security Report`)
+				return createTarArchive("REPORT-users-api.md", content), nil
+			},
+			wantFrontmatter: map[string]any{
+				"endpoint": "users-api",
+				"score":    float64(8), // YAML v3 parses integers as float64 by default
+			},
+			wantBodyContains: "Users API Security Report",
+		},
+		{
+			name:         "collect report for target with hyphens",
+			repoName:     "api-gateway",
+			targetName:   "auth-token-v2",
+			expectedPath: "/workspace/api-gateway/REPORT-auth-token-v2.md",
+			copyFromFunc: func(_ context.Context, _, path string) (io.ReadCloser, error) {
+				if path != "/workspace/api-gateway/REPORT-auth-token-v2.md" {
+					return nil, errors.New("unexpected path: " + path)
+				}
+				content := []byte(`---
+endpoint: auth-token-v2
+---
+
+# Auth Token V2 Report`)
+				return createTarArchive("REPORT-auth-token-v2.md", content), nil
+			},
+			wantFrontmatter: map[string]any{
+				"endpoint": "auth-token-v2",
+			},
+			wantBodyContains: "Auth Token V2 Report",
+		},
+		{
+			name:         "empty target name falls back to REPORT.md",
+			repoName:     "my-service",
+			targetName:   "",
+			expectedPath: "/workspace/my-service/REPORT.md",
+			copyFromFunc: func(_ context.Context, _, path string) (io.ReadCloser, error) {
+				if path != "/workspace/my-service/REPORT.md" {
+					return nil, errors.New("unexpected path: " + path)
+				}
+				content := []byte(`---
+title: Default Report
+---
+
+# Default Report Body`)
+				return createTarArchive("REPORT.md", content), nil
+			},
+			wantFrontmatter: map[string]any{
+				"title": "Default Report",
+			},
+			wantBodyContains: "Default Report Body",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestActivityEnvironment()
+
+			provider := &mockProvider{copyFromFunc: tt.copyFromFunc}
+			activities := NewReportActivities(provider)
+			env.RegisterActivity(activities.CollectReport)
+
+			input := CollectReportInput{
+				ContainerID: "test-container",
+				RepoName:    tt.repoName,
+				TargetName:  tt.targetName,
+			}
+
+			result, err := env.ExecuteActivity(activities.CollectReport, input)
+			require.NoError(t, err)
+
+			var report *model.ReportOutput
+			require.NoError(t, result.Get(&report))
+			require.NotNil(t, report)
+
+			assert.Empty(t, report.Error)
+			assert.Equal(t, tt.wantFrontmatter, report.Frontmatter)
+			if tt.wantBodyContains != "" {
+				assert.Contains(t, report.Body, tt.wantBodyContains)
+			}
+		})
+	}
+}
+
 func TestValidateSchema(t *testing.T) {
 	activities := &ReportActivities{}
 

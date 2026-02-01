@@ -2,8 +2,10 @@
 package workflow
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
+	"text/template"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -258,94 +260,100 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 			return failedResult("Agentic execution requires prompt to be set"), nil
 		}
 
-		prompt := buildPrompt(task)
+		// For forEach mode in report tasks, skip the single Claude Code run here.
+		// Claude Code will be run per-target in the report collection section.
+		isForEachMode := task.GetMode() == model.TaskModeReport && len(task.ForEach) > 0
 
-		claudeOptions := workflow.ActivityOptions{
-			StartToCloseTimeout: time.Duration(timeoutMinutes+5) * time.Minute,
-			HeartbeatTimeout:    5 * time.Minute,
-			RetryPolicy:         retryPolicy,
-		}
-		claudeCtx := workflow.WithActivityOptions(ctx, claudeOptions)
+		if !isForEachMode {
+			prompt := buildPrompt(task)
 
-		if err := workflow.ExecuteActivity(claudeCtx, activity.ActivityRunClaudeCode, sandbox.ContainerID, prompt, timeoutMinutes*60).Get(claudeCtx, &claudeResult); err != nil {
-			return failedResult(fmt.Sprintf("Failed to run Claude Code: %v", err)), nil
-		}
-
-		if !claudeResult.Success {
-			errMsg := "Claude Code execution failed"
-			if claudeResult.Error != nil {
-				errMsg = *claudeResult.Error
+			claudeOptions := workflow.ActivityOptions{
+				StartToCloseTimeout: time.Duration(timeoutMinutes+5) * time.Minute,
+				HeartbeatTimeout:    5 * time.Minute,
+				RetryPolicy:         retryPolicy,
 			}
-			return failedResult(errMsg), nil
-		}
+			claudeCtx := workflow.WithActivityOptions(ctx, claudeOptions)
 
-		filesModified = claudeResult.FilesModified
-
-		// 4. Handle clarification if needed (agentic mode only)
-		if claudeResult.NeedsClarification {
-			if task.SlackChannel != nil {
-				msg := fmt.Sprintf("Claude needs clarification for %s:\n\n%s",
-					task.ID, *claudeResult.ClarificationQuestion)
-				_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+			if err := workflow.ExecuteActivity(claudeCtx, activity.ActivityRunClaudeCode, sandbox.ContainerID, prompt, timeoutMinutes*60).Get(claudeCtx, &claudeResult); err != nil {
+				return failedResult(fmt.Sprintf("Failed to run Claude Code: %v", err)), nil
 			}
 
-			status = model.TaskStatusAwaitingApproval
-
-			// Wait for approval or cancellation
-			ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
-				return approved != nil || cancellationRequested
-			})
-			if err != nil || !ok {
-				return failedResult("Timeout waiting for clarification response"), nil
-			}
-			if cancellationRequested {
-				return cancelledResult(), nil
-			}
-		}
-
-		// 5. Human approval for changes (agentic mode only, if required)
-		if task.RequireApproval && len(filesModified) > 0 {
-			status = model.TaskStatusAwaitingApproval
-
-			if task.SlackChannel != nil {
-				// Get changes summary
-				summary := getChangesSummary(ctx, sandbox.ContainerID, task.Repositories)
-				msg := fmt.Sprintf("Claude completed %s. Changes:\n```\n%s\n```\nReply with 'approve' or 'reject'",
-					task.ID, summary)
-				_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+			if !claudeResult.Success {
+				errMsg := "Claude Code execution failed"
+				if claudeResult.Error != nil {
+					errMsg = *claudeResult.Error
+				}
+				return failedResult(errMsg), nil
 			}
 
-			// Wait for approval with 24hr timeout
-			ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
-				return approved != nil || cancellationRequested
-			})
-			if err != nil {
-				return failedResult(fmt.Sprintf("Error waiting for approval: %v", err)), nil
+			filesModified = claudeResult.FilesModified
+
+			// 4. Handle clarification if needed (agentic mode only)
+			if claudeResult.NeedsClarification {
+				if task.SlackChannel != nil {
+					msg := fmt.Sprintf("Claude needs clarification for %s:\n\n%s",
+						task.ID, *claudeResult.ClarificationQuestion)
+					_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+				}
+
+				status = model.TaskStatusAwaitingApproval
+
+				// Wait for approval or cancellation
+				ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
+					return approved != nil || cancellationRequested
+				})
+				if err != nil || !ok {
+					return failedResult("Timeout waiting for clarification response"), nil
+				}
+				if cancellationRequested {
+					return cancelledResult(), nil
+				}
 			}
-			if !ok {
-				signalDone()
-				errMsg := "Approval timeout (24 hours)"
-				duration := workflow.Now(ctx).Sub(startTime).Seconds()
-				return &model.TaskResult{
-					TaskID:          task.ID,
-					Status:          model.TaskStatusCancelled,
-					Error:           &errMsg,
-					DurationSeconds: &duration,
-				}, nil
-			}
-			if cancellationRequested {
-				return cancelledResult(), nil
-			}
-			if approved != nil && !*approved {
-				signalDone()
-				errMsg := "Changes rejected"
-				duration := workflow.Now(ctx).Sub(startTime).Seconds()
-				return &model.TaskResult{
-					TaskID:          task.ID,
-					Status:          model.TaskStatusCancelled,
-					Error:           &errMsg,
-					DurationSeconds: &duration,
-				}, nil
+
+			// 5. Human approval for changes (agentic mode only, if required)
+			if task.RequireApproval && len(filesModified) > 0 {
+				status = model.TaskStatusAwaitingApproval
+
+				if task.SlackChannel != nil {
+					// Get changes summary
+					summary := getChangesSummary(ctx, sandbox.ContainerID, task.Repositories)
+					msg := fmt.Sprintf("Claude completed %s. Changes:\n```\n%s\n```\nReply with 'approve' or 'reject'",
+						task.ID, summary)
+					_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
+				}
+
+				// Wait for approval with 24hr timeout
+				ok, err := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
+					return approved != nil || cancellationRequested
+				})
+				if err != nil {
+					return failedResult(fmt.Sprintf("Error waiting for approval: %v", err)), nil
+				}
+				if !ok {
+					signalDone()
+					errMsg := "Approval timeout (24 hours)"
+					duration := workflow.Now(ctx).Sub(startTime).Seconds()
+					return &model.TaskResult{
+						TaskID:          task.ID,
+						Status:          model.TaskStatusCancelled,
+						Error:           &errMsg,
+						DurationSeconds: &duration,
+					}, nil
+				}
+				if cancellationRequested {
+					return cancelledResult(), nil
+				}
+				if approved != nil && !*approved {
+					signalDone()
+					errMsg := "Changes rejected"
+					duration := workflow.Now(ctx).Sub(startTime).Seconds()
+					return &model.TaskResult{
+						TaskID:          task.ID,
+						Status:          model.TaskStatusCancelled,
+						Error:           &errMsg,
+						DurationSeconds: &duration,
+					}, nil
+				}
 			}
 		}
 	}
@@ -392,37 +400,140 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 				Status:     "success",
 			}
 
-			// Call CollectReport activity
-			collectInput := activity.CollectReportInput{
-				ContainerID: sandbox.ContainerID,
-				RepoName:    repo.Name,
-			}
+			if len(task.ForEach) > 0 {
+				// forEach mode: execute N times, once per target
+			// Note: Each target gets the full task timeout. Total execution time
+			// may be up to len(ForEach) * timeout for sequential execution.
+				logger.Info("Running forEach mode", "repo", repo.Name, "targets", len(task.ForEach))
 
-			var report *model.ReportOutput
-			err := workflow.ExecuteActivity(ctx, activity.ActivityCollectReport, collectInput).Get(ctx, &report)
+				// Create activity context for Claude Code calls in forEach mode
+				claudeOptions := workflow.ActivityOptions{
+					StartToCloseTimeout: time.Duration(timeoutMinutes+5) * time.Minute,
+					HeartbeatTimeout:    5 * time.Minute,
+					RetryPolicy:         retryPolicy,
+				}
+				forEachClaudeCtx := workflow.WithActivityOptions(ctx, claudeOptions)
 
-			if err != nil {
-				errStr := err.Error()
-				repoResult.Status = "failed"
-				repoResult.Error = &errStr
-				logger.Warn("Failed to collect report", "repo", repo.Name, "error", err)
-			} else {
-				repoResult.Report = report
+				var forEachResults []model.ForEachExecution
 
-				// Validate schema if specified
-				if hasSchema(task) && report != nil && report.Frontmatter != nil {
-					schemaInput := activity.ValidateSchemaInput{
-						Frontmatter: report.Frontmatter,
-						Schema:      string(task.Execution.Agentic.Output.Schema),
+				for _, target := range task.ForEach {
+					forEachExec := model.ForEachExecution{
+						Target: target,
 					}
 
-					var validationErrors []string
-					err := workflow.ExecuteActivity(ctx, activity.ActivityValidateSchema, schemaInput).Get(ctx, &validationErrors)
+					// Build target-specific report path
+					reportPath := fmt.Sprintf("/workspace/%s/REPORT-%s.md", repo.Name, target.Name)
+
+					// Build prompt with template substitution
+					targetPrompt, err := buildPromptForTarget(task, target, reportPath)
 					if err != nil {
-						logger.Warn("Schema validation activity failed", "repo", repo.Name, "error", err)
-					} else if len(validationErrors) > 0 {
-						repoResult.Report.ValidationErrors = validationErrors
-						logger.Info("Schema validation errors", "repo", repo.Name, "errors", validationErrors)
+						errStr := fmt.Sprintf("failed to build prompt for target %s: %v", target.Name, err)
+						forEachExec.Error = &errStr
+						logger.Warn("Template error for target", "target", target.Name, "error", err)
+						forEachResults = append(forEachResults, forEachExec)
+						continue
+					}
+
+					// Run Claude Code with substituted prompt
+					logger.Info("Running Claude Code for target", "target", target.Name)
+					var targetResult *model.ClaudeCodeResult
+					err = workflow.ExecuteActivity(forEachClaudeCtx, activity.ActivityRunClaudeCode,
+						sandbox.ContainerID, targetPrompt, timeoutMinutes*60).Get(forEachClaudeCtx, &targetResult)
+
+					if err != nil {
+						errStr := fmt.Sprintf("Claude Code failed for target %s: %v", target.Name, err)
+						forEachExec.Error = &errStr
+						logger.Warn("Claude Code failed for target", "target", target.Name, "error", err)
+						forEachResults = append(forEachResults, forEachExec)
+						continue
+					}
+
+					if !targetResult.Success {
+						errStr := fmt.Sprintf("Claude Code execution failed for target %s", target.Name)
+						if targetResult.Error != nil {
+							errStr = *targetResult.Error
+						}
+						forEachExec.Error = &errStr
+						logger.Warn("Claude Code execution failed for target", "target", target.Name)
+						forEachResults = append(forEachResults, forEachExec)
+						continue
+					}
+
+					// Collect report for this target
+					collectInput := activity.CollectReportInput{
+						ContainerID: sandbox.ContainerID,
+						RepoName:    repo.Name,
+						TargetName:  target.Name,
+					}
+
+					var report *model.ReportOutput
+					err = workflow.ExecuteActivity(ctx, activity.ActivityCollectReport, collectInput).Get(ctx, &report)
+
+					if err != nil {
+						errStr := fmt.Sprintf("failed to collect report for target %s: %v", target.Name, err)
+						forEachExec.Error = &errStr
+						logger.Warn("Failed to collect report for target", "target", target.Name, "error", err)
+						forEachResults = append(forEachResults, forEachExec)
+						continue
+					}
+
+					forEachExec.Report = report
+
+					// Validate schema if specified
+					if hasSchema(task) && report != nil && report.Frontmatter != nil {
+						schemaInput := activity.ValidateSchemaInput{
+							Frontmatter: report.Frontmatter,
+							Schema:      string(task.Execution.Agentic.Output.Schema),
+						}
+
+						var validationErrors []string
+						err := workflow.ExecuteActivity(ctx, activity.ActivityValidateSchema, schemaInput).Get(ctx, &validationErrors)
+						if err != nil {
+							logger.Warn("Schema validation activity failed", "target", target.Name, "error", err)
+						} else if len(validationErrors) > 0 {
+							forEachExec.Report.ValidationErrors = validationErrors
+							logger.Info("Schema validation errors", "target", target.Name, "errors", validationErrors)
+						}
+					}
+
+					forEachResults = append(forEachResults, forEachExec)
+					logger.Info("Completed target", "target", target.Name)
+				}
+
+				repoResult.ForEachResults = forEachResults
+			} else {
+				// Single report mode (existing behavior)
+				collectInput := activity.CollectReportInput{
+					ContainerID: sandbox.ContainerID,
+					RepoName:    repo.Name,
+				}
+
+				var report *model.ReportOutput
+				err := workflow.ExecuteActivity(ctx, activity.ActivityCollectReport, collectInput).Get(ctx, &report)
+
+				if err != nil {
+					errStr := err.Error()
+					repoResult.Status = "failed"
+					repoResult.Error = &errStr
+					logger.Warn("Failed to collect report", "repo", repo.Name, "error", err)
+				} else {
+					repoResult.Report = report
+
+					// Validate schema if specified
+					if hasSchema(task) && report != nil && report.Frontmatter != nil {
+						schemaInput := activity.ValidateSchemaInput{
+							Frontmatter: report.Frontmatter,
+							Schema:      string(task.Execution.Agentic.Output.Schema),
+						}
+
+						var validationErrors []string
+						err := workflow.ExecuteActivity(ctx, activity.ActivityValidateSchema, schemaInput).Get(ctx, &validationErrors)
+						if err != nil {
+							logger.Warn("Schema validation activity failed", "repo", repo.Name, "error", err)
+						} else if len(validationErrors) > 0 {
+							repoResult.Report.ValidationErrors = validationErrors
+							logger.Info("Schema validation errors", "repo", repo.Name, "errors", validationErrors)
+						}
 					}
 				}
 			}
@@ -734,4 +845,78 @@ func createPRsParallel(ctx workflow.Context, task model.Task, containerID, prTit
 	}
 
 	return pullRequests, nil
+}
+
+// substitutePromptTemplate substitutes {{.Name}} and {{.Context}} variables in the prompt.
+func substitutePromptTemplate(prompt string, target model.ForEachTarget) (string, error) {
+	tmpl, err := template.New("prompt").Parse(prompt)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, target); err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+// buildPromptForTarget creates the prompt for a specific forEach target.
+// It substitutes template variables and appends report output instructions.
+func buildPromptForTarget(task model.Task, target model.ForEachTarget, reportPath string) (string, error) {
+	if task.Execution.Agentic == nil || task.Execution.Agentic.Prompt == "" {
+		return "", fmt.Errorf("agentic execution requires prompt to be set")
+	}
+
+	// Substitute template variables in the original prompt
+	substitutedPrompt, err := substitutePromptTemplate(task.Execution.Agentic.Prompt, target)
+	if err != nil {
+		return "", err
+	}
+
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("Task: %s\n\n", task.Title))
+	sb.WriteString(fmt.Sprintf("Target: %s\n\n", target.Name))
+	sb.WriteString(fmt.Sprintf("Instructions:\n%s\n\n", substitutedPrompt))
+
+	if task.TicketURL != nil {
+		sb.WriteString(fmt.Sprintf("Related ticket: %s\n\n", *task.TicketURL))
+	}
+
+	sb.WriteString("Repositories to work on:\n")
+	for _, repo := range task.Repositories {
+		sb.WriteString(fmt.Sprintf("- %s (in /workspace/%s)\n", repo.Name, repo.Name))
+	}
+
+	sb.WriteString("\nPlease analyze the codebase and complete the task. ")
+	sb.WriteString("Follow the existing code style and patterns. ")
+	sb.WriteString("Focus specifically on the target described above.")
+
+	// Append verifier instructions if verifiers are defined
+	verifiers := task.Execution.GetVerifiers()
+	if len(verifiers) > 0 {
+		sb.WriteString("\n\n## Verification\n\n")
+		sb.WriteString("After making changes, verify your work by running these commands:\n\n")
+		for _, v := range verifiers {
+			sb.WriteString(fmt.Sprintf("- **%s**: `%s`\n", v.Name, strings.Join(v.Command, " ")))
+		}
+		sb.WriteString("\nFix any errors before completing the task. All verifiers must pass.")
+	}
+
+	// Append report mode instructions with target-specific path
+	sb.WriteString("\n\n## Output Requirements\n\n")
+	sb.WriteString(fmt.Sprintf("Write your report to `%s` with YAML frontmatter:\n\n", reportPath))
+	sb.WriteString("```markdown\n---\nkey: value\nanother_key: value\n---\n\n# Report\n\nYour analysis and findings here.\n```\n\n")
+	sb.WriteString("The frontmatter section (between `---` delimiters) should contain structured data.\n")
+	sb.WriteString("The body section (after the closing `---`) should contain your detailed analysis.\n")
+
+	if hasSchema(task) {
+		sb.WriteString("\nThe frontmatter must conform to this JSON Schema:\n\n```json\n")
+		sb.WriteString(string(task.Execution.Agentic.Output.Schema))
+		sb.WriteString("\n```\n")
+	}
+
+	return sb.String(), nil
 }
