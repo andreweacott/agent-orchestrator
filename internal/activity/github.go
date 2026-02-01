@@ -38,12 +38,13 @@ func extractOwnerRepo(url string) (string, string) {
 
 // CreatePullRequestInput contains all inputs for creating a pull request.
 type CreatePullRequestInput struct {
-	ContainerID string
-	Repo        model.Repository
-	TaskID      string
-	Title       string
-	Description string
-	PRConfig    *model.PullRequestConfig
+	ContainerID             string
+	Repo                    model.Repository
+	TaskID                  string
+	Title                   string
+	Description             string
+	PRConfig                *model.PullRequestConfig
+	UseTransformationLayout bool // If true, repo is at /workspace/targets/{name}
 }
 
 // CreatePullRequest creates a pull request for changes in a repository.
@@ -51,8 +52,14 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input CreatePu
 	logger := activity.GetLogger(ctx)
 	logger.Info("Creating PR", "repo", input.Repo.Name)
 
+	// Determine repo path based on layout
+	repoPath := fmt.Sprintf("/workspace/%s", input.Repo.Name)
+	if input.UseTransformationLayout {
+		repoPath = fmt.Sprintf("/workspace/targets/%s", input.Repo.Name)
+	}
+
 	// Check if there are changes
-	statusCmd := fmt.Sprintf("cd /workspace/%s && git status --porcelain", input.Repo.Name)
+	statusCmd := fmt.Sprintf("cd %s && git status --porcelain", repoPath)
 	statusResult, err := a.Provider.ExecShell(ctx, input.ContainerID, statusCmd, AgentUser)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check git status: %w", err)
@@ -90,24 +97,24 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input CreatePu
 	}
 
 	// Create branch
-	checkoutCmd := fmt.Sprintf("cd /workspace/%s && git checkout -b %s", input.Repo.Name, branchName)
+	checkoutCmd := fmt.Sprintf("cd %s && git checkout -b %s", repoPath, branchName)
 	result, err := a.Provider.ExecShell(ctx, input.ContainerID, checkoutCmd, AgentUser)
 	if err != nil || result.ExitCode != 0 {
 		return nil, fmt.Errorf("git checkout failed: %s", result.Stderr)
 	}
 
 	// Stage all changes
-	addCmd := fmt.Sprintf("cd /workspace/%s && git add -A", input.Repo.Name)
+	addCmd := fmt.Sprintf("cd %s && git add -A", repoPath)
 	result, err = a.Provider.ExecShell(ctx, input.ContainerID, addCmd, AgentUser)
 	if err != nil || result.ExitCode != 0 {
 		return nil, fmt.Errorf("git add failed: %s", result.Stderr)
 	}
 
 	// BUG-001 Fix: Use heredoc for commit message to handle special characters (quotes, etc.)
-	commitCmd := fmt.Sprintf(`cd /workspace/%s && git commit -m "$(cat <<'COMMIT_MSG_EOF'
+	commitCmd := fmt.Sprintf(`cd %s && git commit -m "$(cat <<'COMMIT_MSG_EOF'
 %s
 COMMIT_MSG_EOF
-)"`, input.Repo.Name, input.Title)
+)"`, repoPath, input.Title)
 	result, err = a.Provider.ExecShell(ctx, input.ContainerID, commitCmd, AgentUser)
 	if err != nil || result.ExitCode != 0 {
 		return nil, fmt.Errorf("git commit failed: %s", result.Stderr)
@@ -128,8 +135,8 @@ COMMIT_MSG_EOF
 	// SEC-002 Fix: Use environment variable expansion instead of embedding token in command
 	// The GITHUB_TOKEN is already set in the container environment by ProvisionSandbox
 	// This prevents the token from appearing in shell command strings and logs
-	pushCmd := fmt.Sprintf(`cd /workspace/%s && git push "https://x-access-token:${GITHUB_TOKEN}@github.com/%s/%s.git" %s`,
-		input.Repo.Name, owner, repoName, branchName)
+	pushCmd := fmt.Sprintf(`cd %s && git push "https://x-access-token:${GITHUB_TOKEN}@github.com/%s/%s.git" %s`,
+		repoPath, owner, repoName, branchName)
 	pushResult, err := a.Provider.ExecShell(ctx, input.ContainerID, pushCmd, AgentUser)
 	if err != nil {
 		return nil, fmt.Errorf("git push failed: %w", err)

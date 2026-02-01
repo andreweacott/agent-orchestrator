@@ -34,9 +34,10 @@ func NewReportActivities(provider sandbox.Provider) *ReportActivities {
 
 // CollectReportInput contains inputs for collecting a report.
 type CollectReportInput struct {
-	ContainerID string
-	RepoName    string
-	TargetName  string // If set, reads REPORT-{TargetName}.md instead of REPORT.md
+	ContainerID         string
+	RepoName            string
+	TargetName          string // If set, reads REPORT-{TargetName}.md instead of REPORT.md
+	UseTransformationLayout bool   // If true, looks in /workspace/targets/{repoName} instead of /workspace/{repoName}
 }
 
 // ValidateSchemaInput contains inputs for schema validation.
@@ -59,12 +60,18 @@ func (a *ReportActivities) CollectReport(ctx context.Context, input CollectRepor
 		}, nil
 	}
 
+	// Determine base path based on layout mode
+	basePath := "/workspace"
+	if input.UseTransformationLayout {
+		basePath = "/workspace/targets"
+	}
+
 	// Report path is inside the repository directory
 	var reportPath string
 	if input.TargetName != "" {
-		reportPath = fmt.Sprintf("/workspace/%s/REPORT-%s.md", input.RepoName, input.TargetName)
+		reportPath = fmt.Sprintf("%s/%s/REPORT-%s.md", basePath, input.RepoName, input.TargetName)
 	} else {
-		reportPath = fmt.Sprintf("/workspace/%s/REPORT.md", input.RepoName)
+		reportPath = fmt.Sprintf("%s/%s/REPORT.md", basePath, input.RepoName)
 	}
 
 	// Read the report file from the container

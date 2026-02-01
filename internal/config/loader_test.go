@@ -470,3 +470,154 @@ execution:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "for_each can only be used with mode: report")
 }
+
+func TestLoadTask_TransformationWithTargets(t *testing.T) {
+	yamlContent := `
+version: 1
+id: test-transformation
+title: Transformation Test
+mode: report
+
+transformation:
+  url: https://github.com/org/classification-tools.git
+  branch: main
+  setup:
+    - npm install
+
+targets:
+  - url: https://github.com/org/api-server.git
+    name: server
+  - url: https://github.com/org/web-client.git
+    name: client
+
+for_each:
+  - name: users-endpoint
+    context: |
+      Endpoint: GET /api/v1/users
+
+execution:
+  agentic:
+    prompt: Analyze {{.Name}}
+`
+	task, err := LoadTask([]byte(yamlContent))
+	require.NoError(t, err)
+
+	// Check transformation repo
+	require.NotNil(t, task.Transformation)
+	assert.Equal(t, "https://github.com/org/classification-tools.git", task.Transformation.URL)
+	assert.Equal(t, "main", task.Transformation.Branch)
+	assert.Equal(t, []string{"npm install"}, task.Transformation.Setup)
+	assert.Equal(t, "classification-tools", task.Transformation.Name) // auto-derived
+
+	// Check targets
+	assert.Len(t, task.Targets, 2)
+	assert.Equal(t, "server", task.Targets[0].Name)
+	assert.Equal(t, "client", task.Targets[1].Name)
+
+	// Repositories should be empty when using transformation mode
+	assert.Empty(t, task.Repositories)
+
+	// Check helper methods
+	assert.True(t, task.UsesTransformationRepo())
+	effectiveRepos := task.GetEffectiveRepositories()
+	assert.Len(t, effectiveRepos, 2)
+	assert.Equal(t, "server", effectiveRepos[0].Name)
+}
+
+func TestLoadTask_TransformationWithoutTargets(t *testing.T) {
+	// Transformation repo without targets is valid (self-contained recipe)
+	yamlContent := `
+version: 1
+id: test-transformation-only
+title: Self-Contained Transformation
+mode: report
+
+transformation:
+  url: https://github.com/org/analysis-tools.git
+  branch: main
+
+execution:
+  agentic:
+    prompt: Run the analysis
+`
+	task, err := LoadTask([]byte(yamlContent))
+	require.NoError(t, err)
+
+	require.NotNil(t, task.Transformation)
+	assert.Empty(t, task.Targets)
+	assert.Empty(t, task.Repositories)
+	assert.True(t, task.UsesTransformationRepo())
+	assert.Empty(t, task.GetEffectiveRepositories())
+}
+
+func TestLoadTask_TransformationWithRepositoriesError(t *testing.T) {
+	// Cannot use both transformation and repositories
+	yamlContent := `
+version: 1
+id: test-invalid
+title: Invalid Mix
+mode: report
+
+transformation:
+  url: https://github.com/org/tools.git
+
+repositories:
+  - url: https://github.com/org/repo.git
+
+execution:
+  agentic:
+    prompt: Do something
+`
+	_, err := LoadTask([]byte(yamlContent))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot use both 'transformation' and 'repositories'")
+}
+
+func TestLoadTask_TargetsWithoutTransformationError(t *testing.T) {
+	// Targets require transformation to be set
+	yamlContent := `
+version: 1
+id: test-invalid
+title: Invalid Targets
+mode: report
+
+targets:
+  - url: https://github.com/org/repo.git
+
+execution:
+  agentic:
+    prompt: Do something
+`
+	_, err := LoadTask([]byte(yamlContent))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "'targets' requires 'transformation' to be set")
+}
+
+func TestLoadTask_LegacyRepositoriesStillWorks(t *testing.T) {
+	// Ensure backward compatibility
+	yamlContent := `
+version: 1
+id: test-legacy
+title: Legacy Task
+repositories:
+  - url: https://github.com/org/repo.git
+    branch: develop
+    name: my-repo
+execution:
+  agentic:
+    prompt: Fix the bug
+`
+	task, err := LoadTask([]byte(yamlContent))
+	require.NoError(t, err)
+
+	assert.Nil(t, task.Transformation)
+	assert.Empty(t, task.Targets)
+	assert.Len(t, task.Repositories, 1)
+	assert.Equal(t, "my-repo", task.Repositories[0].Name)
+
+	// Helper method checks
+	assert.False(t, task.UsesTransformationRepo())
+	effectiveRepos := task.GetEffectiveRepositories()
+	assert.Len(t, effectiveRepos, 1)
+	assert.Equal(t, "my-repo", effectiveRepos[0].Name)
+}

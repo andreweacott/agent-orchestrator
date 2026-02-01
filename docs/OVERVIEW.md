@@ -56,10 +56,6 @@ Orchestrates multiple Tasks across many repositories with:
 - **Human escalation**: Ask a human to decide—abort, continue, or retry
 - **Result aggregation**: Collect outputs across all Tasks
 
-Campaigns enable two-phase patterns:
-1. **Discover** (report mode): Analyze repositories, collect data
-2. **Transform** (transform mode): Apply changes based on discovery findings
-
 ### Execution Modes
 
 | Mode | Deterministic | Agentic |
@@ -109,6 +105,15 @@ Campaigns enable two-phase patterns:
 | **Dependency inventories** | Catalog all Log4j versions in the org |
 | **Technical debt assessment** | Identify deprecated patterns before migration |
 | **Pre-migration analysis** | Discover what needs to change before transforming |
+
+### Transformation Repository (Reusable Skills)
+
+| Use Case | Description |
+|----------|-------------|
+| **Endpoint classification** | Use a classification skill repo to analyze API endpoints across multiple services |
+| **Security scanning** | Reusable security audit skills applied to different codebases |
+| **Migration tooling** | Centralized migration recipes applied to target repositories |
+| **Multi-repo analysis** | Analyze relationships between services using a central skills repo |
 
 ---
 
@@ -403,74 +408,98 @@ pull_request:
   labels: ["security", "automated", "dependencies"]
 ```
 
-### Example 4: Two-Phase Campaign (Discover → Transform)
+### Example 4: Transformation Repository (Reusable Skills)
 
-First discover which services use a deprecated API, then migrate them:
+Use a centralized skills repository to analyze endpoints across multiple target services:
 
-**Phase 1: Discovery**
 ```yaml
-# discover-deprecated-api.yaml
+# endpoint-analysis.yaml
 version: 1
-id: discover-v1-api-usage
-title: "Discover deprecated v1 API usage"
+id: endpoint-classification
+title: "Classify API endpoints for removal"
 mode: report
 
-repositories:
-  # All services in the org
-  - url: https://github.com/org/service-a.git
-  # ... 100 services
+# Transformation repo - contains skills, tools, CLAUDE.md
+transformation:
+  url: https://github.com/org/classification-tools.git
+  branch: main
+  setup:
+    - npm install
+
+# Target repos to analyze (cloned to /workspace/targets/)
+targets:
+  - url: https://github.com/org/api-server.git
+    name: server
+  - url: https://github.com/org/web-client.git
+    name: client
+  - url: https://github.com/org/mobile-app.git
+    name: mobile
+
+for_each:
+  - name: users-endpoint
+    context: |
+      Endpoint: GET /api/v1/users
+      Location: targets/server/src/handlers/users.go:45
+  - name: legacy-export
+    context: |
+      Endpoint: POST /api/v1/export
+      Location: targets/server/src/handlers/legacy.go:120
 
 execution:
   agentic:
     prompt: |
-      Search for usage of the deprecated v1 API client.
-      Look for:
-      - Imports of "github.com/org/api-client/v1"
-      - Calls to v1.Client or v1.NewClient
-      - Any v1.* type usage
+      Use the endpoint-classification skill to analyze {{.Name}}.
 
-      Output JSON with files and usage locations.
+      {{.Context}}
 
-    output_schema:
-      type: object
-      properties:
-        uses_v1_api:
-          type: boolean
-        import_locations:
-          type: array
-          items:
+      Search for callers across all targets:
+      - /workspace/targets/server
+      - /workspace/targets/client
+      - /workspace/targets/mobile
+
+      Classify whether this endpoint can be safely removed.
+
+    output:
+      schema:
+        type: object
+        properties:
+          classification:
             type: string
-        usage_count:
-          type: integer
+            enum: ["remove", "keep", "deprecate", "investigate"]
+          callers_found:
+            type: integer
+          reasoning:
+            type: string
+
+timeout: 30m
 ```
 
-**Phase 2: Transform (targeted)**
-```yaml
-# migrate-to-v2-api.yaml
-version: 1
-id: migrate-v1-to-v2
-title: "Migrate from v1 to v2 API client"
+The workspace layout when using transformation mode:
+```
+/workspace/
+├── .claude/                    # From transformation repo
+│   └── skills/
+│       └── endpoint-classification.md
+├── CLAUDE.md                   # From transformation repo
+└── targets/
+    ├── server/                 # Target repos
+    ├── client/
+    └── mobile/
+```
 
-# Only repositories identified in discovery
-repositories:
-  - url: https://github.com/org/service-a.git
-  - url: https://github.com/org/service-c.git
-  # ... only the 23 services using v1 API
+```bash
+# Run endpoint classification
+orchestrator run --file endpoint-analysis.yaml
 
-execution:
-  agentic:
-    prompt: |
-      Migrate from the deprecated v1 API client to v2:
-      - Update import from "github.com/org/api-client/v1" to "v2"
-      - Replace v1.Client with v2.Client
-      - Update method calls to match new signatures
-      - Handle new error types
-
-    verifiers:
-      - name: build
-        command: ["go", "build", "./..."]
-      - name: test
-        command: ["go", "test", "./..."]
+# View reports per endpoint
+orchestrator reports endpoint-classification-xyz
+# Repository: (transformation)
+#   Target: users-endpoint
+#     classification: keep
+#     callers_found: 12
+#   Target: legacy-export
+#     classification: remove
+#     callers_found: 0
 ```
 
 ---

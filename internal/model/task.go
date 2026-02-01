@@ -217,8 +217,18 @@ type Task struct {
 	// Task mode: transform (default) or report
 	Mode TaskMode `json:"mode,omitempty" yaml:"mode,omitempty"`
 
-	// Repositories to operate on
-	Repositories []Repository `json:"repositories" yaml:"repositories"`
+	// Transformation repository - contains skills, tools, CLAUDE.md
+	// Claude Code runs from this repo's root (/workspace)
+	// When set, targets are cloned into /workspace/targets/
+	Transformation *Repository `json:"transformation,omitempty" yaml:"transformation,omitempty"`
+
+	// Target repositories - cloned into /workspace/targets/
+	// Used when Transformation is set; mutually exclusive with Repositories for clarity
+	Targets []Repository `json:"targets,omitempty" yaml:"targets,omitempty"`
+
+	// Repositories to operate on (existing behavior when Transformation is not set)
+	// Cloned directly into /workspace/{name}
+	Repositories []Repository `json:"repositories,omitempty" yaml:"repositories,omitempty"`
 
 	// For report mode: iterate over targets within a repo
 	ForEach []ForEachTarget `json:"for_each,omitempty" yaml:"for_each,omitempty"`
@@ -265,6 +275,20 @@ func (t Task) GetTimeoutMinutes() int {
 		return 30
 	}
 	return int(d.Minutes())
+}
+
+// UsesTransformationRepo returns true if the task uses a transformation repository.
+func (t Task) UsesTransformationRepo() bool {
+	return t.Transformation != nil
+}
+
+// GetEffectiveRepositories returns the repositories to operate on.
+// When using transformation mode, returns Targets; otherwise returns Repositories.
+func (t Task) GetEffectiveRepositories() []Repository {
+	if t.UsesTransformationRepo() {
+		return t.Targets
+	}
+	return t.Repositories
 }
 
 // SandboxInfo contains information about a provisioned sandbox.

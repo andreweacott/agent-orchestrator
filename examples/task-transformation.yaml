@@ -1,0 +1,119 @@
+# Example: Transformation Repository with Multi-Target Analysis
+#
+# This demonstrates the transformation repository pattern where:
+# - A "transformation" repo contains the recipe: skills, tools, CLAUDE.md
+# - "Targets" are the repositories being analyzed/transformed
+#
+# Workspace layout when using transformation mode:
+#   /workspace/
+#   ├── .claude/         # From transformation repo
+#   │   └── skills/      # Skills discovered by Claude Code
+#   ├── CLAUDE.md        # From transformation repo
+#   ├── bin/             # Tools from transformation repo
+#   └── targets/
+#       ├── server/      # Target repos cloned here
+#       └── client/
+#
+# Claude Code runs from /workspace, automatically discovering skills from
+# the transformation repo.
+
+version: 1
+id: endpoint-classification
+title: "Classify API endpoints for removal"
+description: "Use classification skills to analyze endpoints across multiple services"
+mode: report
+
+# Transformation repository - the "recipe"
+# Contains skills, tools, and configuration for the analysis
+transformation:
+  url: https://github.com/example/classification-tools.git
+  branch: main
+  setup:
+    - npm install  # If tools need setup
+
+# Target repositories - what gets analyzed
+# Cloned into /workspace/targets/
+targets:
+  - url: https://github.com/example/api-server.git
+    name: server
+    branch: main
+  - url: https://github.com/example/web-client.git
+    name: client
+    branch: main
+  - url: https://github.com/example/mobile-client.git
+    name: mobile
+    branch: main
+
+# forEach iterates over targets within the repos
+# Each target gets its own Claude Code execution and produces REPORT-{name}.md
+for_each:
+  - name: users-endpoint
+    context: |
+      Endpoint: GET /api/v1/users
+      Location: targets/server/src/handlers/users.go:45
+      Description: Returns list of users with pagination
+  - name: legacy-export
+    context: |
+      Endpoint: POST /api/v1/legacy/export
+      Location: targets/server/src/handlers/legacy.go:120
+      Description: Legacy CSV export endpoint
+  - name: auth-token
+    context: |
+      Endpoint: POST /api/v1/auth/token
+      Location: targets/server/src/handlers/auth.go:30
+      Description: Token refresh endpoint
+
+execution:
+  agentic:
+    # Use the endpoint-classification skill from the transformation repo
+    # {{.Name}} and {{.Context}} are substituted for each forEach target
+    prompt: |
+      Use the endpoint-classification skill to analyze {{.Name}}.
+
+      {{.Context}}
+
+      Search for callers of this endpoint in:
+      - /workspace/targets/server (server code)
+      - /workspace/targets/client (web client)
+      - /workspace/targets/mobile (mobile client)
+
+      Classify whether this endpoint can be safely removed.
+
+    output:
+      schema:
+        type: object
+        required:
+          - endpoint
+          - classification
+          - confidence
+        properties:
+          endpoint:
+            type: string
+            description: "The endpoint being analyzed"
+          classification:
+            type: string
+            enum: ["remove", "keep", "deprecate", "investigate"]
+            description: "Recommended action for this endpoint"
+          confidence:
+            type: string
+            enum: ["high", "medium", "low"]
+            description: "Confidence level in the classification"
+          callers_found:
+            type: integer
+            description: "Number of callers found across all targets"
+          callers:
+            type: array
+            items:
+              type: object
+              properties:
+                location:
+                  type: string
+                repo:
+                  type: string
+                description:
+                  type: string
+          reasoning:
+            type: string
+            description: "Explanation for the classification"
+
+timeout: 45m  # Allow 15 minutes per target (3 targets)

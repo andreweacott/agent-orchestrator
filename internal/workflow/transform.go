@@ -182,10 +182,22 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	}
 	cloneCtx := workflow.WithActivityOptions(ctx, cloneOptions)
 
+	// Build clone input based on transformation vs legacy mode
+	cloneInput := activity.CloneRepositoriesInput{
+		SandboxInfo:    *sandbox,
+		AgentsMD:       agentsMD,
+		Transformation: task.Transformation,
+		Targets:        task.Targets,
+		Repositories:   task.Repositories,
+	}
+
 	var clonedPaths []string
-	if err := workflow.ExecuteActivity(cloneCtx, activity.ActivityCloneRepositories, *sandbox, task.Repositories, agentsMD).Get(cloneCtx, &clonedPaths); err != nil {
+	if err := workflow.ExecuteActivity(cloneCtx, activity.ActivityCloneRepositories, cloneInput).Get(cloneCtx, &clonedPaths); err != nil {
 		return failedResult(fmt.Sprintf("Failed to clone repositories: %v", err)), nil
 	}
+
+	// Get effective repositories (targets when using transformation mode, repos otherwise)
+	effectiveRepos := task.GetEffectiveRepositories()
 
 	// 3. Run transformation (Claude Code OR Deterministic)
 	status = model.TaskStatusRunning
@@ -214,7 +226,7 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 		var deterministicResult *model.DeterministicResult
 		err := workflow.ExecuteActivity(deterministicCtx, activity.ActivityExecuteDeterministic,
 			*sandbox, task.Execution.Deterministic.Image, task.Execution.Deterministic.Args,
-			task.Execution.Deterministic.Env, task.Repositories).Get(deterministicCtx, &deterministicResult)
+			task.Execution.Deterministic.Env, effectiveRepos).Get(deterministicCtx, &deterministicResult)
 
 		if err != nil {
 			return failedResult(fmt.Sprintf("Failed to run deterministic transformation: %v", err)), nil
@@ -237,7 +249,7 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 			duration := workflow.Now(ctx).Sub(startTime).Seconds()
 			// Build repository results with no PRs
 			var repoResults []model.RepositoryResult
-			for _, repo := range task.Repositories {
+			for _, repo := range effectiveRepos {
 				repoResults = append(repoResults, model.RepositoryResult{
 					Repository: repo.Name,
 					Status:     "success",
@@ -316,7 +328,7 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 
 				if task.SlackChannel != nil {
 					// Get changes summary
-					summary := getChangesSummary(ctx, sandbox.ContainerID, task.Repositories)
+					summary := getChangesSummary(ctx, sandbox.ContainerID, effectiveRepos)
 					msg := fmt.Sprintf("Claude completed %s. Changes:\n```\n%s\n```\nReply with 'approve' or 'reject'",
 						task.ID, summary)
 					_ = workflow.ExecuteActivity(ctx, activity.ActivityNotifySlack, *task.SlackChannel, msg, (*string)(nil)).Get(ctx, nil)
@@ -370,7 +382,13 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 		verifierCtx := workflow.WithActivityOptions(ctx, verifierOptions)
 
 		var verifiersResult *model.VerifiersResult
-		if err := workflow.ExecuteActivity(verifierCtx, activity.ActivityRunVerifiers, *sandbox, task.Repositories, verifiers).Get(verifierCtx, &verifiersResult); err != nil {
+		verifierInput := activity.RunVerifiersInput{
+			SandboxInfo:             *sandbox,
+			Repos:                   effectiveRepos,
+			Verifiers:               verifiers,
+			UseTransformationLayout: task.UsesTransformationRepo(),
+		}
+		if err := workflow.ExecuteActivity(verifierCtx, activity.ActivityRunVerifiers, verifierInput).Get(verifierCtx, &verifiersResult); err != nil {
 			return failedResult(fmt.Sprintf("Failed to run verifiers: %v", err)), nil
 		}
 
@@ -390,11 +408,11 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	// 7. Handle based on mode
 	if task.GetMode() == model.TaskModeReport {
 		// Report mode: collect reports, skip PR creation
-		logger.Info("Collecting reports", "repos", len(task.Repositories))
+		logger.Info("Collecting reports", "repos", len(effectiveRepos))
 
 		var repoResults []model.RepositoryResult
 
-		for _, repo := range task.Repositories {
+		for _, repo := range effectiveRepos {
 			repoResult := model.RepositoryResult{
 				Repository: repo.Name,
 				Status:     "success",
@@ -422,7 +440,8 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 					}
 
 					// Build target-specific report path
-					reportPath := fmt.Sprintf("/workspace/%s/REPORT-%s.md", repo.Name, target.Name)
+					repoPath := getRepoPath(task, repo)
+					reportPath := fmt.Sprintf("%s/REPORT-%s.md", repoPath, target.Name)
 
 					// Build prompt with template substitution
 					targetPrompt, err := buildPromptForTarget(task, target, reportPath)
@@ -461,9 +480,10 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 
 					// Collect report for this target
 					collectInput := activity.CollectReportInput{
-						ContainerID: sandbox.ContainerID,
-						RepoName:    repo.Name,
-						TargetName:  target.Name,
+						ContainerID:             sandbox.ContainerID,
+						RepoName:                repo.Name,
+						TargetName:              target.Name,
+						UseTransformationLayout: task.UsesTransformationRepo(),
 					}
 
 					var report *model.ReportOutput
@@ -504,8 +524,9 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 			} else {
 				// Single report mode (existing behavior)
 				collectInput := activity.CollectReportInput{
-					ContainerID: sandbox.ContainerID,
-					RepoName:    repo.Name,
+					ContainerID:             sandbox.ContainerID,
+					RepoName:                repo.Name,
+					UseTransformationLayout: task.UsesTransformationRepo(),
 				}
 
 				var report *model.ReportOutput
@@ -563,9 +584,9 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	prDesc := buildPRDescriptionWithFiles(task, filesModified)
 	prTitle := fmt.Sprintf("fix: %s", task.Title)
 
-	if task.Parallel && len(task.Repositories) > 1 {
+	if task.Parallel && len(effectiveRepos) > 1 {
 		// Parallel PR creation for multi-repo tasks
-		logger.Info("Creating PRs in parallel", "repos", len(task.Repositories))
+		logger.Info("Creating PRs in parallel", "repos", len(effectiveRepos))
 		var prErr error
 		pullRequests, prErr = createPRsParallel(ctx, task, sandbox.ContainerID, prTitle, prDesc)
 		if prErr != nil {
@@ -573,14 +594,15 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 		}
 	} else {
 		// Sequential PR creation (default)
-		for _, repo := range task.Repositories {
+		for _, repo := range effectiveRepos {
 			input := activity.CreatePullRequestInput{
-				ContainerID: sandbox.ContainerID,
-				Repo:        repo,
-				TaskID:      task.ID,
-				Title:       prTitle,
-				Description: prDesc,
-				PRConfig:    task.PullRequest,
+				ContainerID:             sandbox.ContainerID,
+				Repo:                    repo,
+				TaskID:                  task.ID,
+				Title:                   prTitle,
+				Description:             prDesc,
+				PRConfig:                task.PullRequest,
+				UseTransformationLayout: task.UsesTransformationRepo(),
 			}
 			var pr *model.PullRequest
 			if err := workflow.ExecuteActivity(ctx, activity.ActivityCreatePullRequest, input).Get(ctx, &pr); err != nil {
@@ -614,7 +636,7 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	for i := range pullRequests {
 		prByRepo[pullRequests[i].RepoName] = &pullRequests[i]
 	}
-	for _, repo := range task.Repositories {
+	for _, repo := range effectiveRepos {
 		repoResult := model.RepositoryResult{
 			Repository:    repo.Name,
 			Status:        "success",
@@ -651,9 +673,21 @@ func generateAgentsMD(task model.Task) string {
 		sb.WriteString(fmt.Sprintf("**Related Ticket:** %s\n\n", *task.TicketURL))
 	}
 
+	// Include transformation repo info if set
+	if task.UsesTransformationRepo() {
+		sb.WriteString("## Transformation Repository\n\n")
+		sb.WriteString("This workspace uses a transformation repository with skills and tools.\n")
+		sb.WriteString(fmt.Sprintf("- Transformation: `%s` (branch: %s)\n\n", task.Transformation.Name, task.Transformation.Branch))
+	}
+
 	sb.WriteString("## Repositories\n\n")
-	for _, repo := range task.Repositories {
-		sb.WriteString(fmt.Sprintf("- `%s` (branch: %s)\n", repo.Name, repo.Branch))
+	effectiveRepos := task.GetEffectiveRepositories()
+	for _, repo := range effectiveRepos {
+		if task.UsesTransformationRepo() {
+			sb.WriteString(fmt.Sprintf("- `%s` (branch: %s) - located at `/workspace/targets/%s`\n", repo.Name, repo.Branch, repo.Name))
+		} else {
+			sb.WriteString(fmt.Sprintf("- `%s` (branch: %s)\n", repo.Name, repo.Branch))
+		}
 	}
 
 	sb.WriteString("\n## Guidelines\n\n")
@@ -681,8 +715,10 @@ func buildPrompt(task model.Task) string {
 	}
 
 	sb.WriteString("Repositories to work on:\n")
-	for _, repo := range task.Repositories {
-		sb.WriteString(fmt.Sprintf("- %s (in /workspace/%s)\n", repo.Name, repo.Name))
+	effectiveRepos := task.GetEffectiveRepositories()
+	for _, repo := range effectiveRepos {
+		repoPath := getRepoPath(task, repo)
+		sb.WriteString(fmt.Sprintf("- %s (in %s)\n", repo.Name, repoPath))
 	}
 
 	sb.WriteString("\nPlease analyze the codebase and implement the necessary fix. ")
@@ -703,12 +739,14 @@ func buildPrompt(task model.Task) string {
 	// Append report mode instructions if in report mode
 	if task.GetMode() == model.TaskModeReport {
 		sb.WriteString("\n\n## Output Requirements\n\n")
-		if len(task.Repositories) == 1 {
-			sb.WriteString(fmt.Sprintf("Write your report to `/workspace/%s/REPORT.md` with YAML frontmatter:\n\n", task.Repositories[0].Name))
+		if len(effectiveRepos) == 1 {
+			repoPath := getRepoPath(task, effectiveRepos[0])
+			sb.WriteString(fmt.Sprintf("Write your report to `%s/REPORT.md` with YAML frontmatter:\n\n", repoPath))
 		} else {
-			sb.WriteString("For each repository, write a report to `/workspace/{repo-name}/REPORT.md` with YAML frontmatter:\n\n")
-			for _, repo := range task.Repositories {
-				sb.WriteString(fmt.Sprintf("- `/workspace/%s/REPORT.md`\n", repo.Name))
+			sb.WriteString("For each repository, write a report to the appropriate REPORT.md with YAML frontmatter:\n\n")
+			for _, repo := range effectiveRepos {
+				repoPath := getRepoPath(task, repo)
+				sb.WriteString(fmt.Sprintf("- `%s/REPORT.md`\n", repoPath))
 			}
 			sb.WriteString("\n")
 		}
@@ -724,6 +762,16 @@ func buildPrompt(task model.Task) string {
 	}
 
 	return sb.String()
+}
+
+// getRepoPath returns the path to a repository within the workspace.
+// When using transformation mode, repos are in /workspace/targets/{name}.
+// Otherwise, repos are in /workspace/{name}.
+func getRepoPath(task model.Task, repo model.Repository) string {
+	if task.UsesTransformationRepo() {
+		return fmt.Sprintf("/workspace/targets/%s", repo.Name)
+	}
+	return fmt.Sprintf("/workspace/%s", repo.Name)
 }
 
 // hasSchema checks if the task has a JSON Schema defined for report validation.
@@ -802,17 +850,20 @@ func createPRsParallel(ctx workflow.Context, task model.Task, containerID, prTit
 	// Create a channel to collect results
 	resultChannel := workflow.NewChannel(ctx)
 
+	effectiveRepos := task.GetEffectiveRepositories()
+
 	// Launch parallel goroutines for each repository
-	for _, repo := range task.Repositories {
+	for _, repo := range effectiveRepos {
 		repo := repo // capture loop variable
 		workflow.Go(ctx, func(gCtx workflow.Context) {
 			input := activity.CreatePullRequestInput{
-				ContainerID: containerID,
-				Repo:        repo,
-				TaskID:      task.ID,
-				Title:       prTitle,
-				Description: prDesc,
-				PRConfig:    task.PullRequest,
+				ContainerID:             containerID,
+				Repo:                    repo,
+				TaskID:                  task.ID,
+				Title:                   prTitle,
+				Description:             prDesc,
+				PRConfig:                task.PullRequest,
+				UseTransformationLayout: task.UsesTransformationRepo(),
 			}
 			var pr *model.PullRequest
 			err := workflow.ExecuteActivity(gCtx, activity.ActivityCreatePullRequest, input).Get(gCtx, &pr)
@@ -829,7 +880,7 @@ func createPRsParallel(ctx workflow.Context, task model.Task, containerID, prTit
 	var pullRequests []model.PullRequest
 	var errors []string
 
-	for i := 0; i < len(task.Repositories); i++ {
+	for i := 0; i < len(effectiveRepos); i++ {
 		var result prResult
 		resultChannel.Receive(ctx, &result)
 
@@ -886,8 +937,10 @@ func buildPromptForTarget(task model.Task, target model.ForEachTarget, reportPat
 	}
 
 	sb.WriteString("Repositories to work on:\n")
-	for _, repo := range task.Repositories {
-		sb.WriteString(fmt.Sprintf("- %s (in /workspace/%s)\n", repo.Name, repo.Name))
+	effectiveRepos := task.GetEffectiveRepositories()
+	for _, repo := range effectiveRepos {
+		repoPath := getRepoPath(task, repo)
+		sb.WriteString(fmt.Sprintf("- %s (in %s)\n", repo.Name, repoPath))
 	}
 
 	sb.WriteString("\nPlease analyze the codebase and complete the task. ")

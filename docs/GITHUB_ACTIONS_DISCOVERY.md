@@ -10,7 +10,6 @@ For one-off discovery tasks that need durability but don't require the full plat
 | Single repo, many targets | ✅ | ❌ Overkill |
 | Recurring scheduled audits | ⚠️ Consider platform | ✅ |
 | Multi-repo with HITL approval | ❌ | ✅ |
-| Two-phase discover → transform | ❌ | ✅ |
 
 ## Basic Discovery Workflow
 

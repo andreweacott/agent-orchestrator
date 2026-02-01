@@ -2,7 +2,7 @@
 
 Incremental implementation phases for the code transformation and discovery platform.
 
-> **Last Updated**: 2026-02-01 (Phase 4b forEach Discovery complete)
+> **Last Updated**: 2026-02-01 (Phase 4c Transformation Repository complete)
 >
 > **Note**: Implementation uses Task/Campaign terminology aligned with the design documents.
 >
@@ -173,9 +173,9 @@ orchestrator run \
 
 **Goal**: Support distributed code analysis and discovery across repositories without creating PRs.
 
-> **Design Rationale**: Report mode enables discovery campaigns—analyzing repositories to collect
-> structured data before making changes. This is essential for security audits, dependency
-> inventories, and two-phase transform patterns (discover → transform).
+> **Design Rationale**: Report mode enables discovery—analyzing repositories to collect
+> structured data. This is essential for security audits, dependency inventories, and
+> pre-migration analysis.
 
 ### 4.1 Core Report Mode
 
@@ -364,13 +364,109 @@ orchestrator reports <workflow-id> --output json
 
 ---
 
+## Phase 4c: Transformation Repository Support
+
+**Goal**: Enable separation of "recipe" (transformation repo) from "targets" for reusable skills and tools.
+
+> **Design Rationale**: Transformation repositories allow centralized skills, tools, and configuration
+> to be applied across multiple target repositories. This is essential for endpoint classification,
+> security audits, and multi-repo analysis where the "how" (skills) should be separate from the
+> "what" (target repos).
+
+### 4c.1 Data Model
+
+- [x] Add `Transformation *Repository` field to Task (the "recipe" repo)
+- [x] Add `Targets []Repository` field (repos to analyze/transform)
+- [x] Add `UsesTransformationRepo()` helper method
+- [x] Add `GetEffectiveRepositories()` to return targets or repositories based on mode
+
+### 4c.2 Config Loader
+
+- [x] Parse `transformation` and `targets` fields from YAML
+- [x] Validation: error if both `transformation` and `repositories` are used
+- [x] Validation: error if `targets` without `transformation`
+- [x] Backward compatible: `repositories` alone still works
+
+### 4c.3 Workspace Layout
+
+- [x] Transformation mode: clone transformation repo to `/workspace/`, targets to `/workspace/targets/`
+- [x] Legacy mode: clone repos directly to `/workspace/{name}`
+- [x] Run transformation repo setup commands first
+- [x] Run target repo setup commands in `/workspace/targets/{name}`
+
+### 4c.4 Activity Updates
+
+- [x] `CloneRepositories` - support transformation layout with new input struct
+- [x] `RunVerifiers` - use correct base path based on layout
+- [x] `CreatePullRequest` - use correct repo path based on layout
+- [x] `CollectReport` - use correct report path based on layout
+
+### 4c.5 Workflow Updates
+
+- [x] Pass `UseTransformationLayout` flag to all relevant activities
+- [x] Use `GetEffectiveRepositories()` for iteration
+- [x] Update `generateAgentsMD()` to show transformation info
+- [x] Update `buildPrompt()` to show correct paths
+
+### Deliverable
+
+```yaml
+# transformation-task.yaml
+version: 1
+id: endpoint-classification
+title: "Classify endpoints for removal"
+mode: report
+
+# Transformation repo with skills and tools
+transformation:
+  url: https://github.com/org/classification-tools.git
+  branch: main
+  setup:
+    - npm install
+
+# Target repos to analyze
+targets:
+  - url: https://github.com/org/api-server.git
+    name: server
+  - url: https://github.com/org/web-client.git
+    name: client
+
+for_each:
+  - name: users-endpoint
+    context: |
+      Endpoint: GET /api/v1/users
+      Location: targets/server/src/handlers/users.go:45
+
+execution:
+  agentic:
+    prompt: |
+      Use the endpoint-classification skill to analyze {{.Name}}.
+      {{.Context}}
+
+      Search for callers in /workspace/targets/
+```
+
+```bash
+# Run with transformation repo
+orchestrator run --file transformation-task.yaml
+
+# Workspace layout:
+# /workspace/
+# ├── .claude/skills/     # From transformation repo
+# ├── CLAUDE.md           # From transformation repo
+# └── targets/
+#     ├── server/         # Target repos
+#     └── client/
+```
+
+---
+
 ## Phase 5: Campaign Orchestration
 
 **Goal**: Orchestrate multiple Tasks across many repositories with batch execution and failure handling.
 
 > **Design Rationale**: Campaigns are essential for fleet-wide operations. They enable
-> batch execution with parallelism, failure thresholds for human escalation, and
-> two-phase patterns (discover → transform).
+> batch execution with parallelism and failure thresholds for human escalation.
 
 ### 5.1 Campaign Data Model
 
@@ -392,13 +488,7 @@ orchestrator reports <workflow-id> --output json
 - [ ] Signal handlers for human decisions (abort/continue/retry)
 - [ ] Re-queue failed Tasks on retry decision
 
-### 5.4 Two-Phase Campaigns
-
-- [ ] Support `phases` configuration with discover and transform phases
-- [ ] Filter repositories based on discovery results
-- [ ] Pass discovery data to transform phase
-
-### 5.5 CLI Support
+### 5.4 CLI Support
 
 - [ ] `orchestrator campaign run --file campaign.yaml`
 - [ ] `orchestrator campaign status <id>`
@@ -723,6 +813,7 @@ helm install codetransform ./charts/codetransform \
 | 3 | Deterministic | Docker-based transformations | ✅ Complete |
 | 4 | Report Mode | Discovery and analysis (no PRs) | ✅ Complete |
 | 4b | forEach Discovery | Multi-target iteration within repos | ✅ Complete |
+| 4c | Transformation Repo | Reusable skills, recipe/targets separation | ✅ Complete |
 | 5 | **Campaign** | Batch orchestration, failure handling | ⬜ Not started |
 | 6 | **Kubernetes Jobs** | K8s sandbox provider | ⬜ Not started |
 | 7 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |
@@ -743,9 +834,9 @@ Each phase builds on the previous and delivers working functionality.
 3. **Phase 8** - Security hardening
 
 > **Priority Note**: Campaign orchestration (Phase 5) is the next core platform capability.
-> It enables the two-phase discover → transform pattern which is valuable for security audits,
-> dependency inventories, and targeted migrations. Campaigns can be developed using the
-> existing Docker sandbox before adding Kubernetes support.
+> It enables batch execution across many repositories which is valuable for fleet-wide
+> migrations and security fixes. Campaigns can be developed using the existing Docker
+> sandbox before adding Kubernetes support.
 
 ### Key Changes from Previous Plan
 

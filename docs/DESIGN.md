@@ -52,7 +52,6 @@ Orchestrates multiple Tasks across many repositories:
 - Submits Tasks in configurable batches
 - Monitors progress and aggregates results
 - Pauses on failure thresholds for human decision
-- Enables two-phase patterns (discover → transform)
 
 ### Modes
 
@@ -67,6 +66,36 @@ Orchestrates multiple Tasks across many repositories:
 |------|----------------|--------------|
 | **Deterministic** | Docker image (OpenRewrite, custom script) | Exit code + verifiers |
 | **Agentic** | Claude Code CLI with prompt | Agent iterates until verifiers pass |
+
+### Transformation Repository
+
+A **transformation repository** separates the "recipe" (how to transform/analyze) from the "targets" (what to operate on). This enables reusable skills, tools, and configuration.
+
+| Concept | Description |
+|---------|-------------|
+| **Transformation repo** | Contains `.claude/skills/`, `CLAUDE.md`, tools, and configuration |
+| **Target repos** | Repositories being analyzed or transformed |
+
+**Workspace Layout (Transformation Mode):**
+```
+/workspace/
+├── .claude/         # From transformation repo
+│   └── skills/      # Skills discovered by Claude Code
+├── CLAUDE.md        # From transformation repo
+├── bin/             # Tools from transformation repo
+└── targets/
+    ├── server/      # Target repos cloned here
+    └── client/
+```
+
+**Workspace Layout (Legacy Mode):**
+```
+/workspace/
+├── server/          # Repos cloned directly
+└── client/
+```
+
+Claude Code runs from `/workspace`, so transformation repo skills are automatically discovered.
 
 ---
 
@@ -208,11 +237,28 @@ description: string           # Optional longer description
 
 mode: transform | report      # Default: transform
 
+# Option 1: Simple mode - repositories cloned to /workspace/{name}
 repositories:
   - url: string               # Git URL (required)
     branch: string            # Default: main
     name: string              # Directory name, derived from URL if not set
     setup:                    # Commands to run after clone
+      - string
+
+# Option 2: Transformation mode - recipe repo + targets
+# Use transformation + targets OR repositories, not both
+transformation:               # Transformation repo (the "recipe")
+  url: string                 # Git URL
+  branch: string              # Default: main
+  name: string                # Auto-derived from URL
+  setup:                      # Commands to run after clone
+    - string
+
+targets:                      # Target repos (when using transformation)
+  - url: string               # Cloned to /workspace/targets/{name}
+    branch: string
+    name: string
+    setup:
       - string
 
 # For report mode: iterate over targets within a repo
@@ -489,6 +535,57 @@ execution:
 timeout: 10m
 ```
 
+**Transformation Repository with Multi-Target Analysis:**
+```yaml
+version: 1
+id: endpoint-classification
+title: "Classify endpoints for removal"
+mode: report
+
+# Transformation repo contains skills and tools
+transformation:
+  url: https://github.com/org/classification-tools.git
+  branch: main
+  setup:
+    - npm install
+
+# Target repos to analyze
+targets:
+  - url: https://github.com/org/api-server.git
+    name: server
+  - url: https://github.com/org/web-client.git
+    name: client
+
+for_each:
+  - name: users-endpoint
+    context: |
+      Endpoint: GET /api/v1/users
+      Location: targets/server/src/handlers/users.go:45
+
+execution:
+  agentic:
+    prompt: |
+      Use the endpoint-classification skill to analyze {{.Name}}.
+
+      {{.Context}}
+
+      Search for callers in:
+      - /workspace/targets/server
+      - /workspace/targets/client
+
+    output:
+      schema:
+        type: object
+        properties:
+          classification:
+            type: string
+            enum: ["remove", "keep", "deprecate"]
+          callers_found:
+            type: integer
+
+timeout: 30m
+```
+
 ### Campaign Schema (campaign.yaml)
 
 Orchestrates multiple Tasks across repositories:
@@ -539,17 +636,6 @@ failure:
   threshold_count: int        # Or pause after N failures
   action: pause | abort       # What to do on threshold (default: pause)
 
-# Two-phase configuration
-phases:
-  - name: discover
-    mode: report
-    task_template: {}
-  - name: transform
-    mode: transform
-    # Repositories filtered to those with findings from discover phase
-    filter_from_phase: discover
-    filter_condition: ".uses_deprecated_api == true"
-    task_template: {}
 ```
 
 #### Campaign Examples
@@ -627,52 +713,6 @@ task_template:
 batch:
   size: 20
   parallelism: 10
-```
-
-**Two-Phase Campaign:**
-```yaml
-version: 1
-id: api-v2-migration
-title: "Discover and migrate deprecated v1 API"
-
-phases:
-  - name: discover
-    mode: report
-    task_template:
-      execution:
-        agentic:
-          prompt: "Find usage of deprecated v1 API client..."
-          output:
-            schema:
-              type: object
-              properties:
-                uses_v1_api:
-                  type: boolean
-                usage_locations:
-                  type: array
-
-  - name: transform
-    mode: transform
-    filter_from_phase: discover
-    filter_condition: ".uses_v1_api == true"
-    task_template:
-      execution:
-        agentic:
-          prompt: "Migrate from v1 API client to v2..."
-          verifiers:
-            - name: build
-              command: ["go", "build", "./..."]
-      pull_request:
-        branch_prefix: "auto/api-v2-migration"
-        title: "Migrate to v2 API client"
-
-batch:
-  size: 10
-  parallelism: 5
-
-failure:
-  threshold_percent: 15
-  action: pause
 ```
 
 ### Go Types
@@ -1172,13 +1212,10 @@ The Campaign workflow orchestrates multiple Tasks:
 │         │         │                                              │
 │         │         └── Collect batch results                     │
 │         │                                                        │
-│         └──▶ Aggregate phase results                            │
+│         └──▶ Aggregate batch results                            │
 │         │                                                        │
 │         ▼                                                        │
-│   3. (Two-phase) Filter repos for transform phase               │
-│         │                                                        │
-│         ▼                                                        │
-│   4. Return CampaignResult                                       │
+│   3. Return CampaignResult                                       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -1708,6 +1745,6 @@ orchestrator/
    • Audit trail
    ```
 
-6. **Campaign as first-class**: Campaigns orchestrate Tasks at scale with batch execution, failure thresholds, and two-phase patterns. This is core functionality, not a future capability.
+6. **Campaign as first-class**: Campaigns orchestrate Tasks at scale with batch execution and failure thresholds. This is core functionality, not a future capability.
 
 7. **Report mode integrated**: Report mode (discovery, audits) is a core mode alongside transform mode, not an afterthought.

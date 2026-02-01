@@ -212,20 +212,169 @@ CRED_EOF
 	return nil
 }
 
+// CloneRepositoriesInput defines the input for CloneRepositories activity.
+type CloneRepositoriesInput struct {
+	SandboxInfo model.SandboxInfo
+
+	// Transformation repo - when set, cloned to /workspace/ root
+	// Targets are then cloned to /workspace/targets/
+	Transformation *model.Repository
+
+	// Target repos - cloned to /workspace/targets/{name} when Transformation is set
+	Targets []model.Repository
+
+	// Legacy repos - cloned to /workspace/{name} when Transformation is not set
+	Repositories []model.Repository
+
+	// AGENTS.md content to write to workspace root
+	AgentsMD string
+}
+
 // CloneRepositories clones repositories into the sandbox and runs setup commands.
-func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandboxInfo model.SandboxInfo, repos []model.Repository, agentsMD string) ([]string, error) {
+// Supports two modes:
+// 1. Transformation mode: Clone transformation repo to /workspace, targets to /workspace/targets/
+// 2. Legacy mode: Clone repos directly to /workspace/{name}
+func (a *SandboxActivities) CloneRepositories(ctx context.Context, input CloneRepositoriesInput) ([]string, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info("Cloning repositories", "count", len(repos))
 
 	// SEC-002: Configure git credentials once at start (token not exposed in clone commands)
 	githubToken := os.Getenv("GITHUB_TOKEN")
-	if err := a.configureGitCredentials(ctx, sandboxInfo.ContainerID, githubToken); err != nil {
+	if err := a.configureGitCredentials(ctx, input.SandboxInfo.ContainerID, githubToken); err != nil {
 		return nil, fmt.Errorf("failed to configure git credentials: %w", err)
 	}
 
 	// BUG-004: Configurable clone depth (default 50 for reasonable history)
 	cloneDepth := getEnvOrDefault("SANDBOX_GIT_CLONE_DEPTH", DefaultCloneDepth)
 
+	var clonedPaths []string
+
+	if input.Transformation != nil {
+		// Transformation mode: clone transformation repo to /workspace, targets to /workspace/targets/
+		paths, err := a.cloneTransformationMode(ctx, input, cloneDepth)
+		if err != nil {
+			return nil, err
+		}
+		clonedPaths = paths
+	} else {
+		// Legacy mode: clone repos to /workspace/{name}
+		logger.Info("Cloning repositories (legacy mode)", "count", len(input.Repositories))
+		paths, err := a.cloneRepos(ctx, input.SandboxInfo.ContainerID, input.Repositories, "/workspace", cloneDepth)
+		if err != nil {
+			return nil, err
+		}
+		clonedPaths = paths
+	}
+
+	// Create AGENTS.md in workspace root
+	logger.Info("Creating AGENTS.md")
+
+	// Use heredoc to write file content
+	writeCmd := fmt.Sprintf("cat > /workspace/AGENTS.md << 'AGENTS_EOF'\n%s\nAGENTS_EOF", input.AgentsMD)
+	result, err := a.Provider.ExecShell(ctx, input.SandboxInfo.ContainerID, writeCmd, AgentUser)
+	if err != nil {
+		logger.Warn("Failed to create AGENTS.md", "error", err)
+	} else if result.ExitCode != 0 {
+		logger.Warn("Failed to create AGENTS.md", "stderr", result.Stderr)
+	}
+
+	return clonedPaths, nil
+}
+
+// cloneTransformationMode handles the transformation repo layout:
+// - Clone transformation repo contents to /workspace (the recipe)
+// - Clone target repos to /workspace/targets/{name}
+func (a *SandboxActivities) cloneTransformationMode(ctx context.Context, input CloneRepositoriesInput, cloneDepth string) ([]string, error) {
+	logger := activity.GetLogger(ctx)
+	transformation := input.Transformation
+
+	logger.Info("Cloning transformation repository", "url", transformation.URL, "branch", transformation.Branch)
+
+	// Validate transformation repo
+	if err := validateGitRef(transformation.Branch, "branch"); err != nil {
+		return nil, fmt.Errorf("invalid transformation branch: %w", err)
+	}
+	if err := validateGitURL(transformation.URL); err != nil {
+		return nil, fmt.Errorf("invalid transformation URL: %w", err)
+	}
+
+	// Clone transformation repo to a temp location first, then move contents to /workspace
+	// This ensures .claude/, CLAUDE.md, bin/, etc. are at the workspace root
+	tmpDir := "/tmp/transformation-clone"
+
+	// Build clone command
+	var cloneCmd string
+	if cloneDepth == "0" || cloneDepth == "" {
+		cloneCmd = fmt.Sprintf("git clone --branch %s %s %s", transformation.Branch, transformation.URL, tmpDir)
+	} else {
+		cloneCmd = fmt.Sprintf("git clone --depth %s --branch %s %s %s", cloneDepth, transformation.Branch, transformation.URL, tmpDir)
+	}
+
+	result, err := a.Provider.ExecShell(ctx, input.SandboxInfo.ContainerID, cloneCmd, AgentUser)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone transformation repo: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("failed to clone transformation repo: %s", result.Stderr)
+	}
+
+	// Move transformation repo contents (including hidden files) to /workspace
+	// Using cp -a to preserve all attributes and handle hidden files, then remove temp
+	moveCmd := fmt.Sprintf("cp -a %s/. /workspace/ && rm -rf %s", tmpDir, tmpDir)
+	result, err = a.Provider.ExecShell(ctx, input.SandboxInfo.ContainerID, moveCmd, AgentUser)
+	if err != nil {
+		return nil, fmt.Errorf("failed to move transformation contents: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("failed to move transformation contents: %s", result.Stderr)
+	}
+
+	activity.RecordHeartbeat(ctx, "Cloned transformation repo")
+
+	// Run transformation repo setup commands (from /workspace)
+	if len(transformation.Setup) > 0 {
+		logger.Info("Running transformation setup commands", "count", len(transformation.Setup))
+		for i, setupCmd := range transformation.Setup {
+			logger.Info("Running transformation setup command", "command", setupCmd)
+			fullCmd := fmt.Sprintf("cd /workspace && %s", setupCmd)
+			result, err := a.Provider.ExecShell(ctx, input.SandboxInfo.ContainerID, fullCmd, AgentUser)
+			if err != nil {
+				return nil, fmt.Errorf("failed to execute transformation setup command %d: %w", i+1, err)
+			}
+			if result.ExitCode != 0 {
+				return nil, fmt.Errorf("transformation setup command %d failed: %s", i+1, result.Stderr)
+			}
+			activity.RecordHeartbeat(ctx, fmt.Sprintf("Transformation setup %d/%d", i+1, len(transformation.Setup)))
+		}
+	}
+
+	var clonedPaths []string
+
+	// Clone target repos to /workspace/targets/ if any
+	if len(input.Targets) > 0 {
+		// Create targets directory
+		mkdirCmd := "mkdir -p /workspace/targets"
+		result, err = a.Provider.ExecShell(ctx, input.SandboxInfo.ContainerID, mkdirCmd, AgentUser)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create targets directory: %w", err)
+		}
+		if result.ExitCode != 0 {
+			return nil, fmt.Errorf("failed to create targets directory: %s", result.Stderr)
+		}
+
+		logger.Info("Cloning target repositories", "count", len(input.Targets))
+		targetPaths, err := a.cloneRepos(ctx, input.SandboxInfo.ContainerID, input.Targets, "/workspace/targets", cloneDepth)
+		if err != nil {
+			return nil, fmt.Errorf("failed to clone target repos: %w", err)
+		}
+		clonedPaths = append(clonedPaths, targetPaths...)
+	}
+
+	return clonedPaths, nil
+}
+
+// cloneRepos clones multiple repositories to the specified base path.
+func (a *SandboxActivities) cloneRepos(ctx context.Context, containerID string, repos []model.Repository, basePath string, cloneDepth string) ([]string, error) {
+	logger := activity.GetLogger(ctx)
 	var clonedPaths []string
 
 	for _, repo := range repos {
@@ -241,19 +390,20 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandboxInfo m
 			return nil, fmt.Errorf("invalid URL for %s: %w", repo.Name, err)
 		}
 
-		logger.Info("Cloning repository", "url", repo.URL, "name", repo.Name, "branch", repo.Branch)
+		repoPath := fmt.Sprintf("%s/%s", basePath, repo.Name)
+		logger.Info("Cloning repository", "url", repo.URL, "name", repo.Name, "branch", repo.Branch, "path", repoPath)
 
 		// SEC-002: Clone without token in URL - git will use stored credentials
 		var cmd string
 		if cloneDepth == "0" || cloneDepth == "" {
 			// Full clone
-			cmd = fmt.Sprintf("git clone --branch %s %s /workspace/%s", repo.Branch, repo.URL, repo.Name)
+			cmd = fmt.Sprintf("git clone --branch %s %s %s", repo.Branch, repo.URL, repoPath)
 		} else {
 			// Shallow clone with configurable depth
-			cmd = fmt.Sprintf("git clone --depth %s --branch %s %s /workspace/%s", cloneDepth, repo.Branch, repo.URL, repo.Name)
+			cmd = fmt.Sprintf("git clone --depth %s --branch %s %s %s", cloneDepth, repo.Branch, repo.URL, repoPath)
 		}
 
-		result, err := a.Provider.ExecShell(ctx, sandboxInfo.ContainerID, cmd, AgentUser)
+		result, err := a.Provider.ExecShell(ctx, containerID, cmd, AgentUser)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute clone command: %w", err)
 		}
@@ -261,7 +411,6 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandboxInfo m
 			return nil, fmt.Errorf("failed to clone %s: %s", repo.URL, result.Stderr)
 		}
 
-		repoPath := fmt.Sprintf("/workspace/%s", repo.Name)
 		clonedPaths = append(clonedPaths, repoPath)
 
 		// Record heartbeat
@@ -273,7 +422,7 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandboxInfo m
 			for i, setupCmd := range repo.Setup {
 				logger.Info("Running setup command", "repo", repo.Name, "command", setupCmd)
 				fullCmd := fmt.Sprintf("cd %s && %s", repoPath, setupCmd)
-				result, err := a.Provider.ExecShell(ctx, sandboxInfo.ContainerID, fullCmd, AgentUser)
+				result, err := a.Provider.ExecShell(ctx, containerID, fullCmd, AgentUser)
 				if err != nil {
 					return nil, fmt.Errorf("failed to execute setup command %d for %s: %w", i+1, repo.Name, err)
 				}
@@ -284,18 +433,6 @@ func (a *SandboxActivities) CloneRepositories(ctx context.Context, sandboxInfo m
 			}
 			logger.Info("Setup completed", "repo", repo.Name)
 		}
-	}
-
-	// Create AGENTS.md in workspace root
-	logger.Info("Creating AGENTS.md")
-
-	// Use heredoc to write file content
-	writeCmd := fmt.Sprintf("cat > /workspace/AGENTS.md << 'AGENTS_EOF'\n%s\nAGENTS_EOF", agentsMD)
-	result, err := a.Provider.ExecShell(ctx, sandboxInfo.ContainerID, writeCmd, AgentUser)
-	if err != nil {
-		logger.Warn("Failed to create AGENTS.md", "error", err)
-	} else if result.ExitCode != 0 {
-		logger.Warn("Failed to create AGENTS.md", "stderr", result.Stderr)
 	}
 
 	return clonedPaths, nil
@@ -316,28 +453,43 @@ func (a *SandboxActivities) CleanupSandbox(ctx context.Context, containerID stri
 }
 
 // RunVerifiers executes verification commands in each repository and returns results.
-func (a *SandboxActivities) RunVerifiers(ctx context.Context, sandboxInfo model.SandboxInfo, repos []model.Repository, verifiers []model.Verifier) (*model.VerifiersResult, error) {
-	logger := activity.GetLogger(ctx)
-	logger.Info("Running verifiers", "count", len(verifiers), "repos", len(repos))
+// RunVerifiersInput contains inputs for running verifiers.
+type RunVerifiersInput struct {
+	SandboxInfo             model.SandboxInfo
+	Repos                   []model.Repository
+	Verifiers               []model.Verifier
+	UseTransformationLayout bool // If true, repos are at /workspace/targets/{name}
+}
 
-	if len(verifiers) == 0 {
+// RunVerifiers executes verification commands in each repository and returns results.
+func (a *SandboxActivities) RunVerifiers(ctx context.Context, input RunVerifiersInput) (*model.VerifiersResult, error) {
+	logger := activity.GetLogger(ctx)
+	logger.Info("Running verifiers", "count", len(input.Verifiers), "repos", len(input.Repos))
+
+	if len(input.Verifiers) == 0 {
 		return &model.VerifiersResult{AllPassed: true, Results: []model.VerifierResult{}}, nil
+	}
+
+	// Determine base path
+	basePath := "/workspace"
+	if input.UseTransformationLayout {
+		basePath = "/workspace/targets"
 	}
 
 	var results []model.VerifierResult
 	allPassed := true
 
-	for _, repo := range repos {
-		repoPath := fmt.Sprintf("/workspace/%s", repo.Name)
+	for _, repo := range input.Repos {
+		repoPath := fmt.Sprintf("%s/%s", basePath, repo.Name)
 
-		for _, verifier := range verifiers {
+		for _, verifier := range input.Verifiers {
 			logger.Info("Running verifier", "name", verifier.Name, "repo", repo.Name)
 
 			// Build command string from verifier.Command slice
 			cmdStr := strings.Join(verifier.Command, " ")
 			fullCmd := fmt.Sprintf("cd %s && %s", repoPath, cmdStr)
 
-			result, err := a.Provider.ExecShell(ctx, sandboxInfo.ContainerID, fullCmd, AgentUser)
+			result, err := a.Provider.ExecShell(ctx, input.SandboxInfo.ContainerID, fullCmd, AgentUser)
 
 			var vResult model.VerifierResult
 			vResult.Name = fmt.Sprintf("%s:%s", repo.Name, verifier.Name)

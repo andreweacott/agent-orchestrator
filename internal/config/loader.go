@@ -63,7 +63,9 @@ type taskV1 struct {
 	Title           string           `yaml:"title"`
 	Description     string           `yaml:"description,omitempty"`
 	Mode            string           `yaml:"mode,omitempty"`
-	Repositories    []repositoryV1   `yaml:"repositories"`
+	Transformation  *repositoryV1    `yaml:"transformation,omitempty"` // Transformation repo (recipe)
+	Targets         []repositoryV1   `yaml:"targets,omitempty"`        // Target repos when using transformation
+	Repositories    []repositoryV1   `yaml:"repositories,omitempty"`   // Legacy: repos to operate on
 	ForEach         []forEachV1      `yaml:"for_each,omitempty"`
 	Execution       executionV1      `yaml:"execution"`
 	TicketURL       string           `yaml:"ticket_url,omitempty"`
@@ -168,6 +170,23 @@ type pullRequestV1 struct {
 	Reviewers    []string `yaml:"reviewers,omitempty"`
 }
 
+// convertRepository converts a repositoryV1 to model.Repository with defaults.
+func convertRepository(r repositoryV1) model.Repository {
+	repo := model.Repository{
+		URL:    r.URL,
+		Branch: r.Branch,
+		Name:   r.Name,
+		Setup:  r.Setup,
+	}
+	if repo.Branch == "" {
+		repo.Branch = "main"
+	}
+	if repo.Name == "" {
+		repo.Name = model.NewRepository(r.URL, repo.Branch, "").Name
+	}
+	return repo
+}
+
 // loadTaskV1 loads a version 1 task from YAML data.
 func loadTaskV1(data []byte) (*model.Task, error) {
 	var tv1 taskV1
@@ -182,9 +201,30 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 	if tv1.Title == "" {
 		return nil, errors.New("title field is required")
 	}
-	if len(tv1.Repositories) == 0 {
-		return nil, errors.New("at least one repository is required")
+
+	// Validate repository configuration
+	hasTransformation := tv1.Transformation != nil
+	hasTargets := len(tv1.Targets) > 0
+	hasRepositories := len(tv1.Repositories) > 0
+
+	if hasTransformation {
+		// Transformation mode: targets are optional (transformation repo may be self-contained)
+		if hasRepositories {
+			// Warn: using both transformation and repositories is ambiguous
+			// For now, we'll use transformation mode and ignore repositories
+			// A proper logger would be better, but we'll return an error for clarity
+			return nil, errors.New("cannot use both 'transformation' and 'repositories'; use 'transformation' with 'targets' or use 'repositories' alone")
+		}
+	} else {
+		// Legacy mode: repositories required
+		if hasTargets {
+			return nil, errors.New("'targets' requires 'transformation' to be set")
+		}
+		if !hasRepositories {
+			return nil, errors.New("at least one repository is required (use 'repositories' or 'transformation' with 'targets')")
+		}
 	}
+
 	if tv1.Execution.Agentic == nil && tv1.Execution.Deterministic == nil {
 		return nil, errors.New("execution must specify either agentic or deterministic")
 	}
@@ -220,21 +260,20 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 		task.RequireApproval = true
 	}
 
-	// Convert repositories
+	// Convert transformation repository if set
+	if tv1.Transformation != nil {
+		transformation := convertRepository(*tv1.Transformation)
+		task.Transformation = &transformation
+	}
+
+	// Convert targets (used with transformation mode)
+	for _, t := range tv1.Targets {
+		task.Targets = append(task.Targets, convertRepository(t))
+	}
+
+	// Convert repositories (legacy mode)
 	for _, r := range tv1.Repositories {
-		repo := model.Repository{
-			URL:    r.URL,
-			Branch: r.Branch,
-			Name:   r.Name,
-			Setup:  r.Setup,
-		}
-		if repo.Branch == "" {
-			repo.Branch = "main"
-		}
-		if repo.Name == "" {
-			repo.Name = model.NewRepository(r.URL, repo.Branch, "").Name
-		}
-		task.Repositories = append(task.Repositories, repo)
+		task.Repositories = append(task.Repositories, convertRepository(r))
 	}
 
 	// Convert and validate ForEach
