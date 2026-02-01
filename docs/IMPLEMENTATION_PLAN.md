@@ -1,14 +1,14 @@
 # Implementation Plan
 
-Incremental implementation phases for the code transformation platform.
+Incremental implementation phases for the code transformation and discovery platform.
 
-> **Last Updated**: 2026-02-01 (Design Review - Phases Revised)
+> **Last Updated**: 2026-02-01 (Design Restructure - DESIGN.md and OVERVIEW.md split)
 >
-> **Note**: Implementation uses `TransformTask`/`Transform` workflow naming, aligned with the
-> generic transformation model in the design document.
+> **Note**: Implementation uses Task/Campaign terminology aligned with the design documents.
 >
 > **Vision**: Managed Turbolift with two execution backends (Docker images for deterministic
-> transforms, Claude Code for agentic transforms). See DESIGN.md for full architecture.
+> transforms, Claude Code for agentic transforms) and two modes (transform for PRs, report for
+> discovery). See DESIGN.md for full architecture and OVERVIEW.md for use cases.
 
 ---
 
@@ -167,116 +167,114 @@ orchestrator run \
   --verifier "build:mvn compile"
 ```
 
-Or via YAML:
-```yaml
-id: openrewrite-migration
-title: Migrate Log4j 1.x to 2.x
-mode: deterministic
-image: openrewrite/rewrite:latest
-args:
-  - "rewrite:run"
-  - "-Drewrite.activeRecipes=org.openrewrite.java.logging.log4j.Log4j1ToLog4j2"
-repositories:
-  - url: https://github.com/org/service.git
-verifiers:
-  - name: build
-    command: ["mvn", "compile"]
-```
-
 ---
 
-## Phase 4: CodeTransform CRD & Controller
+## Phase 4: Report Mode (Discovery)
 
-**Goal**: Kubernetes-native interface for defining transformations.
+**Goal**: Support distributed code analysis and discovery across repositories without creating PRs.
 
-> **Design Rationale**: The CRD provides a declarative, GitOps-friendly interface. Users can
-> `kubectl apply -f transform.yaml` and the controller handles the rest. This aligns with
-> the "managed Turbolift" vision—transformations are resources, not CLI invocations.
+> **Design Rationale**: Report mode enables discovery campaigns—analyzing repositories to collect
+> structured data before making changes. This is essential for security audits, dependency
+> inventories, and two-phase transform patterns (discover → transform).
 
-### 4.1 CRD Definition
+### 4.1 Core Report Mode
 
-- [ ] Define `CodeTransform` CRD schema (OpenAPI v3)
-- [ ] `spec.mode` - execution mode: `transform` (default) or `report`
-- [ ] `spec.repositories[]` - target repos with branch and setup commands
-- [ ] `spec.forEach[]` - iterate over multiple targets within a repo (for report mode)
-- [ ] `spec.transform.image` - deterministic transform (Docker image + args)
-- [ ] `spec.transform.agent` - agentic transform (prompt + verifiers)
-- [ ] `spec.transform.agent.outputSchema` - JSON schema for report mode output validation
-- [ ] `spec.resources` - CPU/memory limits for sandbox
-- [ ] `spec.timeout`, `spec.requireApproval` - execution settings
-- [ ] `spec.pullRequest` - PR title, branch prefix, labels (transform mode only)
-- [ ] `status` subresource - phase, workflowID, repository results, PR URLs or reports
+- [ ] Add `mode` field to Task: `transform` (default) or `report`
+- [ ] Skip PR creation workflow when `mode: report`
+- [ ] Capture agent stdout as structured output
+- [ ] Store report in Task result
+- [ ] Update workflow to branch based on mode
 
-### 4.2 Controller Implementation
+### 4.2 Report Output Collection
 
-- [ ] Scaffold controller using controller-runtime (kubebuilder)
-- [ ] Watch `CodeTransform` resources
-- [ ] On create: start Temporal workflow, record workflowID in status
-- [ ] On update: handle cancellation signals
-- [ ] On delete: cancel workflow, cleanup
-- [ ] Periodic reconcile: sync status from Temporal to CRD
+- [ ] `CollectReport` activity - read `/workspace/REPORT.md` from sandbox
+- [ ] Parse frontmatter (YAML between `---` delimiters) from markdown
+- [ ] Store both structured frontmatter and prose body in result
+- [ ] Append output instructions to prompt for report mode tasks
 
-### 4.3 Temporal Integration
+### 4.3 Frontmatter Schema Validation
 
-- [ ] `CodeTransformReconciler` creates workflows via Temporal client
-- [ ] Query workflow status and map to CRD status phases
-- [ ] Handle Temporal workflow completion/failure events
+- [ ] Parse `output.schema` (JSON Schema) from Task spec
+- [ ] Validate frontmatter against schema
+- [ ] Report validation errors in result
+- [ ] Support common types: object, array, string, number, boolean, enum
 
-### 4.4 CLI Integration
+### 4.4 forEach: Multi-Target Discovery
 
-- [ ] `orchestrator run --file transform.yaml` creates CRD (if in-cluster)
-- [ ] `orchestrator run --file transform.yaml --local` bypasses CRD (direct Temporal)
-- [ ] `orchestrator get <name>` shows CRD status
-- [ ] Support both in-cluster and out-of-cluster operation
+- [ ] Add `for_each[]` field for iterating within a repo
+- [ ] Each target gets its own execution with context variable
+- [ ] Template variable substitution in prompt: `{{.context}}`, `{{.name}}`
+- [ ] Aggregate reports by target in result
+
+### 4.5 CLI Support
+
+- [ ] `orchestrator run --mode report --prompt "..."` - run discovery
+- [ ] `orchestrator reports <workflow-id>` - view collected reports
+- [ ] `orchestrator reports <workflow-id> --output json` - export reports
+- [ ] Update `status` command to show reports for report-mode tasks
 
 ### Deliverable
 
 ```yaml
-apiVersion: codetransform.io/v1alpha1
-kind: CodeTransform
-metadata:
-  name: upgrade-logging
-spec:
-  repositories:
-    - url: https://github.com/org/service-a.git
-    - url: https://github.com/org/service-b.git
-  transform:
-    agent:
-      prompt: |
-        Migrate from log.Printf to slog package.
-      verifiers:
-        - name: build
-          command: ["go", "build", "./..."]
-        - name: test
-          command: ["go", "test", "./..."]
-  resources:
-    limits:
-      memory: "4Gi"
-      cpu: "2"
-  timeout: 30m
-  requireApproval: true
-  pullRequest:
-    branchPrefix: "auto/slog-migration"
-    title: "Migrate to structured logging"
+# discovery-task.yaml
+id: auth-audit
+title: "Authentication security audit"
+mode: report
+
+repositories:
+  - url: https://github.com/org/service-a.git
+  - url: https://github.com/org/service-b.git
+
+execution:
+  agentic:
+    prompt: |
+      Analyze this repository's authentication implementation.
+
+      Write your report to /workspace/REPORT.md with:
+      1. YAML frontmatter containing structured data (auth_library, score, issues)
+      2. Detailed markdown analysis with findings and recommendations
+
+    output:
+      schema:  # Validates the frontmatter
+        type: object
+        properties:
+          auth_library: { type: string }
+          score: { type: integer }
+          issues: { type: array }
+```
+
+Agent writes `/workspace/REPORT.md`:
+```markdown
+---
+auth_library: custom
+score: 4
+issues:
+  - severity: high
+    location: config/secrets.yaml:12
+---
+
+# Authentication Audit: service-b
+
+## Summary
+This service uses a custom auth implementation...
+
+## Findings
+### 1. Hardcoded Credentials (High)
+Found API key in config/secrets.yaml...
 ```
 
 ```bash
-# Apply transformation
-kubectl apply -f upgrade-logging.yaml
+# Run discovery
+orchestrator run --file auth-audit.yaml
 
-# Check status
-kubectl get codetransform upgrade-logging -o yaml
+# View full reports (markdown)
+orchestrator reports auth-audit-xyz789
+# Displays each repository's full report
 
-# Or via CLI
-orchestrator get upgrade-logging
+# Export structured data (frontmatter) for aggregation
+orchestrator reports auth-audit-xyz789 --format json > results.json
+# [{"repository": "service-a", "frontmatter": {"auth_library": "oauth2", ...}}, ...]
 ```
-
-### 4.5 Configuration (Moved from original Phase 4)
-
-- [ ] Load operator config from ConfigMap or file
-- [ ] Default sandbox image, resources, namespace
-- [ ] Temporal connection settings
-- [ ] GitHub/Slack credentials references
 
 ---
 
@@ -284,8 +282,8 @@ orchestrator get upgrade-logging
 
 **Goal**: Run sandboxes on Kubernetes using Jobs for production workloads.
 
-> **Design Rationale**: Plain Kubernetes Jobs are simpler than custom CRDs or Agent Sandbox,
-> and sufficient for ephemeral transformation workloads. The Temporal worker creates Jobs,
+> **Design Rationale**: Plain Kubernetes Jobs are simpler than custom CRDs and
+> sufficient for ephemeral transformation workloads. The Temporal worker creates Jobs,
 > execs into them, and deletes them when done.
 
 ### 5.1 Kubernetes Sandbox Provider
@@ -298,7 +296,7 @@ orchestrator get upgrade-logging
 
 ### 5.2 Job Specification
 
-- [ ] Generate Job spec from `CodeTransform` resource settings
+- [ ] Generate Job spec from Task settings
 - [ ] Configure resources (CPU, memory) from spec
 - [ ] Set `runtimeClassName` for gVisor if specified
 - [ ] Apply node selectors and tolerations
@@ -326,7 +324,7 @@ orchestrator get upgrade-logging
 ### Deliverable
 
 ```yaml
-# Operator config
+# config.yaml
 sandbox:
   provider: kubernetes
   namespace: sandbox-isolated
@@ -345,52 +343,145 @@ sandbox:
 # Worker creates this Job:
 kubectl get jobs -n sandbox-isolated
 NAME                      COMPLETIONS   DURATION   AGE
-transform-task-abc123     0/1           2m         2m
-
-# And execs into the running pod
-kubectl exec -n sandbox-isolated transform-task-abc123-xyz -- git clone ...
+task-abc123               0/1           2m         2m
 ```
 
 ---
 
-## Phase 6: Observability
+## Phase 6: Campaign Orchestration
+
+**Goal**: Orchestrate multiple Tasks across many repositories with batch execution and failure handling.
+
+> **Design Rationale**: Campaigns are essential for fleet-wide operations. They enable
+> batch execution with parallelism, failure thresholds for human escalation, and
+> two-phase patterns (discover → transform).
+
+### 6.1 Campaign Data Model
+
+- [ ] Define `Campaign` struct with repository selection and task template
+- [ ] Define `CampaignResult` with aggregated statistics
+- [ ] YAML schema for campaign.yaml
+
+### 6.2 Campaign Workflow
+
+- [ ] Implement `CampaignWorkflow` as parent workflow
+- [ ] Submit Tasks as child workflows
+- [ ] Batch execution with configurable size and parallelism
+- [ ] Progress monitoring and result aggregation
+
+### 6.3 Failure Handling
+
+- [ ] Track failure rate across Tasks
+- [ ] Pause when failure threshold exceeded
+- [ ] Signal handlers for human decisions (abort/continue/retry)
+- [ ] Re-queue failed Tasks on retry decision
+
+### 6.4 Two-Phase Campaigns
+
+- [ ] Support `phases` configuration with discover and transform phases
+- [ ] Filter repositories based on discovery results
+- [ ] Pass discovery data to transform phase
+
+### 6.5 CLI Support
+
+- [ ] `orchestrator campaign run --file campaign.yaml`
+- [ ] `orchestrator campaign status <id>`
+- [ ] `orchestrator campaign abort <id>`
+- [ ] `orchestrator campaign continue <id>`
+- [ ] `orchestrator campaign retry <id>`
+
+### Deliverable
+
+```yaml
+# campaign.yaml
+id: slog-migration-campaign
+title: "Migrate all Go services to slog"
+
+repositories:
+  explicit:
+    - url: https://github.com/org/service-a.git
+    - url: https://github.com/org/service-b.git
+    # ... 50 services
+
+task_template:
+  mode: transform
+  execution:
+    agentic:
+      prompt: "Migrate from log.Printf to slog..."
+      verifiers:
+        - name: build
+          command: ["go", "build", "./..."]
+  timeout: 30m
+  require_approval: true
+  pull_request:
+    branch_prefix: "auto/slog-migration"
+    title: "Migrate to structured logging"
+
+batch:
+  size: 10
+  parallelism: 5
+
+failure:
+  threshold_percent: 10
+  action: pause
+```
+
+```bash
+# Run campaign
+orchestrator campaign run --file campaign.yaml
+# Campaign started: slog-migration-campaign-abc123
+
+# Check progress
+orchestrator campaign status slog-migration-campaign-abc123
+# Status: Running
+# Progress: 23/50 tasks complete
+# Failed: 2 (4%)
+# PRs created: 21
+
+# Handle pause on threshold
+orchestrator campaign continue slog-migration-campaign-abc123
+```
+
+---
+
+## Phase 7: Observability
 
 **Goal**: Metrics, logging, and dashboards for operational visibility.
 
-> **Design Rationale**: Observability comes before security hardening because you need
-> visibility to tune and debug the system. Without metrics, you're flying blind.
+### 7.1 Prometheus Metrics
 
-### 6.1 Prometheus Metrics
-
-- [ ] Instrument controller and worker with prometheus client
-- [ ] `codetransform_tasks_total` (counter) - by status, transform_type
+- [ ] Instrument workflow and activities with prometheus client
+- [ ] `codetransform_tasks_total` (counter) - by status, mode, transform_type
 - [ ] `codetransform_task_duration_seconds` (histogram) - end-to-end duration
 - [ ] `codetransform_sandbox_provision_seconds` (histogram) - sandbox startup time
 - [ ] `codetransform_verifier_duration_seconds` (histogram) - by verifier name
 - [ ] `codetransform_pr_created_total` (counter) - successful PRs
+- [ ] `codetransform_reports_collected_total` (counter) - report mode
 - [ ] `codetransform_api_tokens_used` (counter) - Claude API token consumption
 
-### 6.2 Structured Logging
+### 7.2 Structured Logging
 
-- [ ] Use slog or zap for structured JSON logs
+- [ ] Use slog for structured JSON logs
 - [ ] Include task_id, workflow_id, repository in all log entries
-- [ ] Log lifecycle events: task started, sandbox provisioned, transform complete, PR created
-- [ ] Separate log streams for controller vs worker vs sandbox
+- [ ] Log lifecycle events: task started, sandbox provisioned, transform complete
+- [ ] Separate log streams for worker vs sandbox
 
-### 6.3 Grafana Dashboard
+### 7.3 Grafana Dashboard
 
 - [ ] Task throughput and success rate
 - [ ] Duration percentiles (p50, p95, p99)
 - [ ] Active tasks and queue depth
 - [ ] Sandbox provisioning latency
 - [ ] Error rate by error type
+- [ ] Campaign progress visualization
 
-### 6.4 Alerting Rules
+### 7.4 Alerting Rules
 
 - [ ] High task failure rate (>10% over 1h)
 - [ ] Task stuck in Running >2x timeout
 - [ ] Sandbox provisioning failures
 - [ ] Worker pod restarts
+- [ ] Campaign paused on threshold
 
 ### Deliverable
 
@@ -399,11 +490,11 @@ kubectl exec -n sandbox-isolated transform-task-abc123-xyz -- git clone ...
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: codetransform-controller
+  name: codetransform-worker
 spec:
   selector:
     matchLabels:
-      app: codetransform-controller
+      app: codetransform-worker
   endpoints:
   - port: metrics
     interval: 30s
@@ -411,46 +502,45 @@ spec:
 
 ---
 
-## Phase 7: Security Hardening
+## Phase 8: Security Hardening
 
 **Goal**: Production-grade security, RBAC, and operational resilience.
 
-### 7.1 Network Policies
+### 8.1 Network Policies
 
 - [ ] Sandbox egress policy: allow HTTPS to GitHub, package registries, AI APIs
 - [ ] Deny all ingress to sandbox pods
 - [ ] Worker-to-sandbox communication via K8s exec API only
-- [ ] Document required egress destinations for common ecosystems (npm, PyPI, Maven)
+- [ ] Document required egress destinations for common ecosystems
 
-### 7.2 RBAC
+### 8.2 RBAC
 
-- [ ] Controller ServiceAccount: create/delete Jobs, update CRD status
 - [ ] Worker ServiceAccount: create Jobs, exec into pods, read secrets
 - [ ] Sandbox ServiceAccount: no K8s API access (empty RBAC)
 - [ ] Namespace-scoped roles for multi-tenant deployments
 
-### 7.3 Secret Management
+### 8.3 Secret Management
 
 - [ ] IRSA for AWS credentials (ECR pull, Secrets Manager)
-- [ ] External Secrets Operator integration for GitHub tokens, API keys
+- [ ] External Secrets Operator integration
 - [ ] Secret rotation without pod restart
 - [ ] Audit which tasks accessed which secrets
 
-### 7.4 Audit Logging
+### 8.4 Audit Logging
 
 - [ ] Enable K8s audit logging for sandbox namespace
 - [ ] Log all exec operations with task context
 - [ ] Integration with SIEM (CloudWatch, Splunk, etc.)
 
-### 7.5 Scaling & Reliability
+### 8.5 Scaling & Reliability
 
 - [ ] HPA for workers based on Temporal task queue depth
 - [ ] Cluster Autoscaler configuration for sandbox node pool
 - [ ] Spot instance node group with fallback to on-demand
-- [ ] Pod Disruption Budgets for controller and workers
+- [ ] Pod Disruption Budgets for workers
 - [ ] Graceful shutdown: drain active tasks before termination
 
-### 7.6 Deployment Artifacts
+### 8.6 Deployment Artifacts
 
 - [ ] Helm chart with configurable values
 - [ ] Terraform module for EKS cluster setup
@@ -470,70 +560,9 @@ helm install codetransform ./charts/codetransform \
 
 ---
 
-## Phase 8: Agent Sandbox Integration (Optional)
-
-**Goal**: Use kubernetes-sigs/agent-sandbox for warm pools and faster provisioning.
-
-> **Design Rationale**: This phase is OPTIONAL. Plain Kubernetes Jobs (Phase 5) are sufficient
-> for most workloads. Only implement this if you need sub-second sandbox provisioning or
-> want to leverage the Agent Sandbox ecosystem.
-
-### 8.1 Agent Sandbox Provider
-
-- [ ] Implement provider using SandboxClaim CRD
-- [ ] Reference SandboxTemplate by name from CodeTransform spec
-- [ ] Acquire sandbox from SandboxWarmPool instead of creating Job
-
-### 8.2 Sandbox Templates
-
-- [ ] Define SandboxTemplate CRDs for common stacks (Go, Node, Python, Java)
-- [ ] Configure gVisor runtime class
-- [ ] Set resource limits matching CodeTransform defaults
-
-### 8.3 Warm Pools
-
-- [ ] Configure SandboxWarmPool CRD with min/max sizes
-- [ ] Metrics for pool utilization and wait time
-- [ ] Auto-tune pool size based on demand patterns
-
-### 8.4 Fallback to Jobs
-
-- [ ] If warm pool exhausted, fall back to creating a Job
-- [ ] Configurable: prefer warm pool vs always use Jobs
-
-### Deliverable
-
-```yaml
-apiVersion: agents.x-k8s.io/v1alpha1
-kind: SandboxTemplate
-metadata:
-  name: go-standard
-spec:
-  runtimeClassName: gvisor
-  containers:
-    - name: sandbox
-      image: claude-sandbox-go:1.22
-      resources:
-        limits:
-          memory: 4Gi
-          cpu: "2"
----
-apiVersion: agents.x-k8s.io/v1alpha1
-kind: SandboxWarmPool
-metadata:
-  name: go-warm-pool
-spec:
-  templateRef:
-    name: go-standard
-  minSize: 2
-  maxSize: 10
-```
-
----
-
 ## Phase 9: Advanced Features
 
-**Goal**: Enhanced capabilities based on usage patterns.
+**Goal**: Enhanced capabilities for production usage.
 
 ### 9.1 Human-in-the-Loop (Basic) - COMPLETE
 
@@ -543,11 +572,10 @@ spec:
 
 ### 9.2 Human-in-the-Loop (Iterative Steering)
 
-**Goal**: Enable rich, iterative human-agent collaboration instead of binary approve/reject.
+**Goal**: Enable iterative human-agent collaboration instead of binary approve/reject.
 
-> **This is the key differentiator.** Basic HITL (approve/reject) is table stakes. Iterative
-> steering—where humans can guide the agent through multiple rounds—is what makes an agentic
-> platform valuable. Prioritize this over Agent Sandbox integration.
+> **This is a key differentiator.** Basic HITL (approve/reject) is table stakes. Iterative
+> steering—where humans can guide the agent through multiple rounds—makes the platform valuable.
 
 #### 9.2.1 View Changes
 
@@ -571,45 +599,6 @@ spec:
 - [ ] `orchestrator approve --workflow-id <id> --files "src/main.go,src/util.go"`
 - [ ] `orchestrator steer --workflow-id <id> --files "src/test.go" --prompt "add edge case tests"`
 
-#### 9.2.4 Interactive Review UI
-
-- [ ] Web UI for reviewing diffs (syntax highlighted)
-- [ ] Side-by-side diff view
-- [ ] Inline commenting on changes
-- [ ] One-click approve/reject/steer buttons
-- [ ] View agent's reasoning and conversation history
-
-#### 9.2.5 Interaction Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Iterative HITL Flow                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   Agent works on task                                           │
-│         │                                                       │
-│         ▼                                                       │
-│   Workflow pauses ──────────────────────────────────────────┐   │
-│         │                                                   │   │
-│         ▼                                                   │   │
-│   Human reviews:                                            │   │
-│   • View diffs (orchestrator diff)                          │   │
-│   • View test output (orchestrator logs)                    │   │
-│   • View agent reasoning                                    │   │
-│         │                                                   │   │
-│         ▼                                                   │   │
-│   Human decides:                                            │   │
-│         │                                                   │   │
-│         ├── Approve ──────────► Create PR ──► Done          │   │
-│         │                                                   │   │
-│         ├── Reject ───────────► Cleanup ───► Done           │   │
-│         │                                                   │   │
-│         └── Steer("try X") ───► Agent continues ────────────┘   │
-│                                 (with new prompt)               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ### 9.3 Scheduled Tasks
 
 - [ ] Temporal schedules for recurring tasks
@@ -628,100 +617,13 @@ spec:
 - [ ] Task submission form
 - [ ] Status dashboard
 - [ ] Result viewing
-- [ ] Diff viewer (integrates with 9.2.4)
+- [ ] Diff viewer (integrates with 9.2)
 
-### 9.6 Report Mode (Discovery)
+### 9.6 Report Storage Options
 
-**Goal**: Support distributed code analysis and discovery across many repositories without creating PRs.
-
-> **Use Case**: Before running a migration campaign, discover which repositories are affected and
-> collect structured data to inform the transformation strategy. Also useful for security audits,
-> dependency inventories, and compliance assessments.
-
-#### 9.6.1 Core Report Mode
-
-- [ ] Add `mode` field to CRD: `transform` (default) or `report`
-- [ ] Skip PR creation workflow when `mode: report`
-- [ ] Capture agent stdout as structured output
-- [ ] Validate output against `outputSchema` if provided
-- [ ] Store report in CRD status (for small reports)
-
-#### 9.6.2 Output Schema Validation
-
-- [ ] Parse `spec.transform.agent.outputSchema` (JSON Schema)
-- [ ] Validate agent output against schema
-- [ ] Report validation errors in status
-- [ ] Support common types: object, array, string, number, boolean, enum
-
-#### 9.6.3 forEach: Multi-Target Discovery
-
-- [ ] Add `spec.forEach[]` field for iterating within a repo
-- [ ] Each target gets its own sandbox execution
-- [ ] Template variable substitution in prompt: `{{.context}}`, `{{.name}}`
-- [ ] Aggregate reports by target in status
-
-#### 9.6.4 Report Storage
-
-- [ ] Inline in CRD status (default, for small reports)
-- [ ] ConfigMap storage for medium reports
+- [ ] Inline in result (default, for small reports)
 - [ ] S3/GCS backend for large-scale discovery (100+ repos)
-- [ ] Operator config: `reportStorage.backend`
-
-#### 9.6.5 CLI Support
-
-- [ ] `orchestrator run --mode report --prompt "..."` - run discovery
-- [ ] `orchestrator reports <name>` - view collected reports
-- [ ] `orchestrator reports <name> --output json` - export reports
-- [ ] `orchestrator reports <name> --aggregate` - show summary statistics
-
-#### 9.6.6 Campaign Integration
-
-- [ ] Discovery Campaign type (mode: report across many repos)
-- [ ] Report aggregation at Campaign level
-- [ ] Two-phase workflow: discover → review → transform
-- [ ] Pass discovery output to transform phase
-
-### Deliverable (Report Mode)
-
-```yaml
-# Discovery task
-apiVersion: codetransform.io/v1alpha1
-kind: CodeTransform
-metadata:
-  name: auth-audit
-spec:
-  mode: report
-  repositories:
-    - url: https://github.com/org/service-a.git
-    - url: https://github.com/org/service-b.git
-  transform:
-    agent:
-      prompt: |
-        Analyze authentication patterns. Output JSON with:
-        - auth_library: string
-        - has_mfa: boolean
-        - issues: array of {severity, description}
-      outputSchema:
-        type: object
-        properties:
-          auth_library: { type: string }
-          has_mfa: { type: boolean }
-          issues: { type: array }
-  timeout: 15m
-```
-
-```bash
-# Run discovery
-orchestrator run --file auth-audit.yaml
-
-# View reports
-orchestrator reports auth-audit
-# service-a: {"auth_library": "oauth2", "has_mfa": true, "issues": []}
-# service-b: {"auth_library": "custom", "has_mfa": false, "issues": [...]}
-
-# Export for further analysis
-orchestrator reports auth-audit --output json > audit-results.json
-```
+- [ ] Config: `report_storage.backend`
 
 ---
 
@@ -732,37 +634,37 @@ orchestrator reports auth-audit --output json > audit-results.json
 | 1 | Local MVP | Single-repo agentic task with Docker | ✅ Complete |
 | 2 | PR Creation | Multi-repo with GitHub PRs | ✅ Complete |
 | 3 | Deterministic | Docker-based transformations | ✅ Complete |
-| 4 | **CRD & Controller** | `CodeTransform` CRD, K8s-native interface | ⬜ Not started |
-| 5 | **Kubernetes Jobs** | K8s sandbox provider using Jobs | ⬜ Not started |
-| 6 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |
-| 7 | **Security** | RBAC, NetworkPolicy, secrets, scaling | ⬜ Not started |
-| 8 | Agent Sandbox | Warm pools (OPTIONAL) | ⬜ Not started |
-| 9 | Advanced | HITL steering, scheduling, cost tracking, **report mode** | 🟡 ~20% (basic HITL only) |
+| 4 | **Report Mode** | Discovery and analysis (no PRs) | ⬜ Not started |
+| 5 | **Kubernetes Jobs** | K8s sandbox provider | ⬜ Not started |
+| 6 | **Campaign** | Batch orchestration, failure handling | ⬜ Not started |
+| 7 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |
+| 8 | **Security** | RBAC, NetworkPolicy, secrets, scaling | ⬜ Not started |
+| 9 | Advanced | HITL steering, scheduling, cost tracking | 🟡 ~20% (basic HITL) |
 
 Each phase builds on the previous and delivers working functionality.
 
 ### Recommended Next Steps
 
-**Parallel Track A (Infrastructure):**
-1. **Phase 4** - CodeTransform CRD and controller (K8s-native interface)
-2. **Phase 5** - Kubernetes Jobs sandbox provider
-3. **Phase 6** - Observability (needed to tune production)
+**Parallel Track A (Product Capabilities):**
+1. **Phase 4** - Report mode for discovery (enables two-phase campaigns)
+2. **Phase 6** - Campaign orchestration (scales to fleet-wide operations)
+3. **Phase 9.2** - Iterative HITL steering (key differentiator)
 
-**Parallel Track B (Product Differentiation):**
-1. **Phase 9.2** - Iterative HITL steering (key differentiator - can start immediately)
-2. **Phase 9.6** - Report mode for distributed discovery (enables two-phase campaigns)
+**Parallel Track B (Production Infrastructure):**
+1. **Phase 5** - Kubernetes Jobs sandbox provider
+2. **Phase 7** - Observability (needed to tune production)
+3. **Phase 8** - Security hardening
 
-> **Priority Note**: Iterative HITL steering (Phase 9.2) is the most valuable feature for
-> agentic mode usability. Report mode (Phase 9.6) enables discovery campaigns which are
-> valuable for pre-migration analysis and security audits. Both have no dependencies on
-> Phases 4-7 and can be developed in parallel using the existing Docker sandbox.
+> **Priority Note**: Report mode (Phase 4) and Campaign orchestration (Phase 6) are core
+> platform capabilities. They enable the two-phase discover → transform pattern which is
+> valuable for security audits, dependency inventories, and targeted migrations.
+> Both can be developed in parallel using the existing Docker sandbox.
 
-### Key Changes from Original Plan
+### Key Changes from Previous Plan
 
-| Original | Revised | Rationale |
+| Previous | Current | Rationale |
 |----------|---------|-----------|
-| Phase 4: Config & Profiles | Phase 4: CRD & Controller | CRD is the primary interface; config folded in |
-| Phase 5: K8s Provider (abstract) | Phase 5: K8s Jobs (concrete) | Jobs are simpler and sufficient |
-| Phase 6: Agent Sandbox | Phase 8: Agent Sandbox (optional) | Defer unless warm pools needed |
-| Phase 7: Prod Hardening (mixed) | Phase 6: Observability, Phase 7: Security | Split for clarity; observability first |
-| Phase 8: Advanced | Phase 9: Advanced | Iterative steering emphasized as key differentiator |
+| Phase 4: CRD & Controller | Phase 4: Report Mode | Report mode is core functionality; CRD is optional convenience layer |
+| Phase 8: Agent Sandbox | Removed | Plain K8s Jobs are sufficient; Agent Sandbox adds complexity without clear benefit |
+| Phase 9.6: Report Mode | Phase 4: Report Mode | Promoted to core phase—discovery is first-class, not an afterthought |
+| Campaign as "future" | Phase 6: Campaign | Campaign is core functionality for fleet-wide operations |
