@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -337,4 +338,135 @@ execution:
 	assert.Equal(t, "develop", task.Repositories[0].Branch)
 	assert.Equal(t, "custom-name", task.Repositories[0].Name)
 	assert.Equal(t, []string{"npm install", "npm run build"}, task.Repositories[0].Setup)
+}
+
+func TestLoadTask_ForEachValid(t *testing.T) {
+	yamlContent := `
+version: 1
+id: test-foreach
+title: ForEach Test
+mode: report
+repositories:
+  - url: https://github.com/org/repo.git
+for_each:
+  - name: users-api
+    context: Handles user authentication
+  - name: orders-api
+    context: Handles order processing
+execution:
+  agentic:
+    prompt: Analyze endpoint
+`
+	task, err := LoadTask([]byte(yamlContent))
+	require.NoError(t, err)
+
+	assert.Len(t, task.ForEach, 2)
+	assert.Equal(t, "users-api", task.ForEach[0].Name)
+	assert.Equal(t, "Handles user authentication", task.ForEach[0].Context)
+	assert.Equal(t, "orders-api", task.ForEach[1].Name)
+	assert.Equal(t, "Handles order processing", task.ForEach[1].Context)
+}
+
+func TestLoadTask_ForEachInvalidTargetName(t *testing.T) {
+	tests := []struct {
+		name        string
+		targetName  string
+		wantErr     string
+	}{
+		{
+			name:       "empty name",
+			targetName: "",
+			wantErr:    "for_each target name is required",
+		},
+		{
+			name:       "spaces in name",
+			targetName: "users api",
+			wantErr:    "contains invalid characters",
+		},
+		{
+			name:       "special characters",
+			targetName: "users/api",
+			wantErr:    "contains invalid characters",
+		},
+		{
+			name:       "dots in name",
+			targetName: "users.api",
+			wantErr:    "contains invalid characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yaml := fmt.Sprintf(`
+version: 1
+id: test-foreach
+title: ForEach Test
+mode: report
+repositories:
+  - url: https://github.com/org/repo.git
+for_each:
+  - name: "%s"
+    context: Some context
+execution:
+  agentic:
+    prompt: Analyze target
+`, tt.targetName)
+			_, err := LoadTask([]byte(yaml))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestLoadTask_ForEachValidTargetNames(t *testing.T) {
+	validNames := []string{
+		"users-api",
+		"orders_api",
+		"PaymentsAPI",
+		"api123",
+		"a",
+		"API-v2_test",
+	}
+
+	for _, name := range validNames {
+		t.Run(name, func(t *testing.T) {
+			yaml := fmt.Sprintf(`
+version: 1
+id: test-foreach
+title: ForEach Test
+mode: report
+repositories:
+  - url: https://github.com/org/repo.git
+for_each:
+  - name: "%s"
+    context: Some context
+execution:
+  agentic:
+    prompt: Analyze target
+`, name)
+			task, err := LoadTask([]byte(yaml))
+			require.NoError(t, err)
+			assert.Equal(t, name, task.ForEach[0].Name)
+		})
+	}
+}
+
+func TestLoadTask_ForEachWithTransformModeError(t *testing.T) {
+	yaml := `
+version: 1
+id: test-foreach
+title: ForEach Test
+mode: transform
+repositories:
+  - url: https://github.com/org/repo.git
+for_each:
+  - name: users-api
+    context: Some context
+execution:
+  agentic:
+    prompt: Fix the bug
+`
+	_, err := LoadTask([]byte(yaml))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "for_each can only be used with mode: report")
 }

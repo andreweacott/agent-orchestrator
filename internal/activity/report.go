@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/adrg/frontmatter"
@@ -17,6 +18,9 @@ import (
 	"github.com/andreweacott/agent-orchestrator/internal/model"
 	"github.com/andreweacott/agent-orchestrator/internal/sandbox"
 )
+
+// targetNamePattern validates target names to prevent path traversal.
+var targetNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // ReportActivities contains activities for report mode operations.
 type ReportActivities struct {
@@ -32,6 +36,7 @@ func NewReportActivities(provider sandbox.Provider) *ReportActivities {
 type CollectReportInput struct {
 	ContainerID string
 	RepoName    string
+	TargetName  string // If set, reads REPORT-{TargetName}.md instead of REPORT.md
 }
 
 // ValidateSchemaInput contains inputs for schema validation.
@@ -42,12 +47,25 @@ type ValidateSchemaInput struct {
 
 // CollectReport reads and parses the report file from the sandbox.
 // The report is expected at /workspace/{repoName}/REPORT.md
+// or /workspace/{repoName}/REPORT-{targetName}.md if TargetName is set.
 func (a *ReportActivities) CollectReport(ctx context.Context, input CollectReportInput) (*model.ReportOutput, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info("Collecting report", "repo", input.RepoName)
+	logger.Info("Collecting report", "repo", input.RepoName, "target", input.TargetName)
+
+	// Validate target name to prevent path traversal (defense in depth)
+	if input.TargetName != "" && !targetNamePattern.MatchString(input.TargetName) {
+		return &model.ReportOutput{
+			Error: fmt.Sprintf("invalid target name '%s': must contain only alphanumeric, underscore, or hyphen", input.TargetName),
+		}, nil
+	}
 
 	// Report path is inside the repository directory
-	reportPath := fmt.Sprintf("/workspace/%s/REPORT.md", input.RepoName)
+	var reportPath string
+	if input.TargetName != "" {
+		reportPath = fmt.Sprintf("/workspace/%s/REPORT-%s.md", input.RepoName, input.TargetName)
+	} else {
+		reportPath = fmt.Sprintf("/workspace/%s/REPORT.md", input.RepoName)
+	}
 
 	// Read the report file from the container
 	reader, err := a.Provider.CopyFrom(ctx, input.ContainerID, reportPath)

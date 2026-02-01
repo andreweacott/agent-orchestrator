@@ -1,0 +1,87 @@
+# Example: Report Mode with forEach (Multi-Target Discovery)
+# This demonstrates using forEach to analyze multiple targets within a single repository.
+# Each target gets its own Claude Code execution with a substituted prompt and produces
+# its own report file (REPORT-{target}.md).
+#
+# Use case: Analyze each API endpoint separately, collecting structured audit data per endpoint.
+# Replace the repository URL with your actual repository.
+
+version: 1
+id: example-foreach
+title: "API Endpoint Security Audit"
+description: "Analyze each API endpoint for security issues and collect structured findings"
+mode: report
+
+repositories:
+  # Replace with your actual repository URL
+  - url: https://github.com/example/api-service.git
+    branch: main
+
+# Define targets to iterate over
+# Each target runs a separate Claude Code execution with {{.Name}} and {{.Context}} substituted
+for_each:
+  - name: users-api
+    context: |
+      The users API handles user registration, authentication, and profile management.
+      Key files: pkg/api/users.go, pkg/handlers/user_handler.go
+  - name: orders-api
+    context: |
+      The orders API handles order creation, updates, and retrieval.
+      Key files: pkg/api/orders.go, pkg/handlers/order_handler.go
+  - name: payments-api
+    context: |
+      The payments API handles payment processing and refunds.
+      Key files: pkg/api/payments.go, pkg/handlers/payment_handler.go
+
+execution:
+  agentic:
+    # Use {{.Name}} and {{.Context}} for template substitution
+    prompt: |
+      Analyze the {{.Name}} endpoint in this repository.
+
+      Context about this endpoint:
+      {{.Context}}
+
+      Focus on:
+      1. Authentication/authorization vulnerabilities
+      2. Input validation issues
+      3. Rate limiting concerns
+      4. Data exposure risks
+
+      Write your findings to the report file with YAML frontmatter containing:
+      - endpoint_name: the name of the endpoint
+      - security_score: integer 1-10
+      - vulnerabilities: array of found issues
+
+    output:
+      schema:
+        type: object
+        required:
+          - endpoint_name
+          - security_score
+        properties:
+          endpoint_name:
+            type: string
+          security_score:
+            type: integer
+            minimum: 1
+            maximum: 10
+          vulnerabilities:
+            type: array
+            items:
+              type: object
+              required:
+                - severity
+                - description
+              properties:
+                severity:
+                  type: string
+                  enum: ["low", "medium", "high", "critical"]
+                description:
+                  type: string
+                location:
+                  type: string
+                recommendation:
+                  type: string
+
+timeout: 45m  # Allow 15 minutes per target (3 targets)

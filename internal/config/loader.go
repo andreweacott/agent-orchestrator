@@ -6,11 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/andreweacott/agent-orchestrator/internal/model"
 )
+
+// validTargetNameRegex validates forEach target names.
+// Target names must contain only alphanumeric characters, underscores, and hyphens.
+var validTargetNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // SupportedVersions lists all schema versions supported by this loader.
 var SupportedVersions = []int{1}
@@ -232,12 +237,24 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 		task.Repositories = append(task.Repositories, repo)
 	}
 
-	// Convert ForEach
+	// Convert and validate ForEach
 	for _, fe := range tv1.ForEach {
+		// Validate target name contains only safe characters for filenames
+		if fe.Name == "" {
+			return nil, errors.New("for_each target name is required")
+		}
+		if !validTargetNameRegex.MatchString(fe.Name) {
+			return nil, fmt.Errorf("for_each target name '%s' contains invalid characters (allowed: a-zA-Z0-9_-)", fe.Name)
+		}
 		task.ForEach = append(task.ForEach, model.ForEachTarget{
 			Name:    fe.Name,
 			Context: fe.Context,
 		})
+	}
+
+	// Validate for_each is only used with report mode
+	if len(task.ForEach) > 0 && tv1.Mode != "" && tv1.Mode != "report" {
+		return nil, errors.New("for_each can only be used with mode: report")
 	}
 
 	// Convert execution

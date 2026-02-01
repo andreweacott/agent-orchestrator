@@ -2,7 +2,7 @@
 
 Incremental implementation phases for the code transformation and discovery platform.
 
-> **Last Updated**: 2026-02-01 (Phase 4 Report Mode complete; Phase 4b added for forEach)
+> **Last Updated**: 2026-02-01 (Phase 4b forEach Discovery complete)
 >
 > **Note**: Implementation uses Task/Campaign terminology aligned with the design documents.
 >
@@ -286,28 +286,34 @@ orchestrator reports auth-audit-xyz789 --format json > results.json
 
 ### 4b.1 Data Model
 
-- [ ] Add `for_each[]` field to Task for defining iteration targets
-- [ ] Add `ForEachExecution` struct to track per-target results *(model exists, not yet used)*
-- [ ] Add `ForEachResults` to `RepositoryResult` *(field exists, not yet populated)*
+- [x] Add `for_each[]` field to Task for defining iteration targets *(already in model.Task)*
+- [x] Add `ForEachExecution` struct to track per-target results *(model.ForEachExecution)*
+- [x] Add `ForEachResults` to `RepositoryResult` *(RepositoryResult.ForEachResults)*
 
 ### 4b.2 Template Substitution
 
-- [ ] Parse `{{.name}}` and `{{.context}}` variables in prompt
-- [ ] Inject target context into each execution
-- [ ] Support nested variable paths: `{{.target.path}}`
+- [x] Parse `{{.Name}}` and `{{.Context}}` variables in prompt *(substitutePromptTemplate function)*
+- [x] Inject target context into each execution *(buildPromptForTarget function)*
+- [x] Error handling for invalid template syntax
 
 ### 4b.3 Workflow Changes
 
-- [ ] Loop over `for_each` targets within each repository
-- [ ] Execute agent once per target with substituted prompt
-- [ ] Collect report per target (namespaced as `REPORT-{target.name}.md` or single file)
-- [ ] Aggregate `ForEachExecution` results in `RepositoryResult`
+- [x] Loop over `for_each` targets within each repository *(in Transform workflow report mode section)*
+- [x] Execute agent once per target with substituted prompt
+- [x] Collect report per target (namespaced as `REPORT-{target.name}.md`)
+- [x] Aggregate `ForEachExecution` results in `RepositoryResult`
+- [x] Continue on partial failures (record error, process next target)
 
 ### 4b.4 CLI Support
 
-- [ ] Display per-target reports in `orchestrator reports` command
-- [ ] Support `--target <name>` filter for viewing specific target reports
-- [ ] JSON export includes target-level grouping
+- [x] Display per-target reports in `orchestrator reports` command
+- [x] Support `--target <name>` filter for viewing specific target reports
+- [x] JSON export includes target-level grouping
+
+### 4b.5 Config Validation
+
+- [x] Validate target names contain only `[a-zA-Z0-9_-]` (safe for filenames)
+- [x] Error if `for_each` used with `mode: transform`
 
 ### Deliverable
 
@@ -358,77 +364,7 @@ orchestrator reports <workflow-id> --output json
 
 ---
 
-## Phase 5: Kubernetes Jobs Sandbox Provider
-
-**Goal**: Run sandboxes on Kubernetes using Jobs for production workloads.
-
-> **Design Rationale**: Plain Kubernetes Jobs are simpler than custom CRDs and
-> sufficient for ephemeral transformation workloads. The Temporal worker creates Jobs,
-> execs into them, and deletes them when done.
-
-### 5.1 Kubernetes Sandbox Provider
-
-- [ ] Implement `Provider` interface for K8s using client-go
-- [ ] `Provision()` - create Job with pod template
-- [ ] `WaitReady()` - wait for pod Running state
-- [ ] `Exec()` - exec into pod via K8s API (like kubectl exec)
-- [ ] `Cleanup()` - delete Job (or rely on TTL)
-
-### 5.2 Job Specification
-
-- [ ] Generate Job spec from Task settings
-- [ ] Configure resources (CPU, memory) from spec
-- [ ] Set `runtimeClassName` for gVisor if specified
-- [ ] Apply node selectors and tolerations
-- [ ] Mount secrets for GitHub token, API keys
-- [ ] Set `ttlSecondsAfterFinished` for automatic cleanup
-
-### 5.3 Provider Selection
-
-- [ ] Factory function based on `SANDBOX_PROVIDER` env var
-- [ ] Auto-detect: Docker socket → Docker, ServiceAccount → Kubernetes
-- [ ] Fallback chain: Kubernetes → Docker → error
-
-### 5.4 Namespace and Multi-tenancy
-
-- [ ] Configurable sandbox namespace (default: `sandbox-isolated`)
-- [ ] Support namespace-per-team for isolation
-- [ ] ResourceQuota enforcement per namespace
-
-### 5.5 Local K8s Testing
-
-- [ ] kind cluster setup script
-- [ ] Integration tests against real cluster
-- [ ] CI pipeline with kind
-
-### Deliverable
-
-```yaml
-# config.yaml
-sandbox:
-  provider: kubernetes
-  namespace: sandbox-isolated
-  image: your-org/claude-sandbox:latest
-  serviceAccount: sandbox-runner
-  nodeSelector:
-    workload-type: sandbox
-  runtimeClassName: gvisor  # optional
-  resources:
-    defaultLimits:
-      memory: "4Gi"
-      cpu: "2"
-```
-
-```bash
-# Worker creates this Job:
-kubectl get jobs -n sandbox-isolated
-NAME                      COMPLETIONS   DURATION   AGE
-task-abc123               0/1           2m         2m
-```
-
----
-
-## Phase 6: Campaign Orchestration
+## Phase 5: Campaign Orchestration
 
 **Goal**: Orchestrate multiple Tasks across many repositories with batch execution and failure handling.
 
@@ -436,33 +372,33 @@ task-abc123               0/1           2m         2m
 > batch execution with parallelism, failure thresholds for human escalation, and
 > two-phase patterns (discover → transform).
 
-### 6.1 Campaign Data Model
+### 5.1 Campaign Data Model
 
 - [ ] Define `Campaign` struct with repository selection and task template
 - [ ] Define `CampaignResult` with aggregated statistics
 - [ ] YAML schema for campaign.yaml
 
-### 6.2 Campaign Workflow
+### 5.2 Campaign Workflow
 
 - [ ] Implement `CampaignWorkflow` as parent workflow
 - [ ] Submit Tasks as child workflows
 - [ ] Batch execution with configurable size and parallelism
 - [ ] Progress monitoring and result aggregation
 
-### 6.3 Failure Handling
+### 5.3 Failure Handling
 
 - [ ] Track failure rate across Tasks
 - [ ] Pause when failure threshold exceeded
 - [ ] Signal handlers for human decisions (abort/continue/retry)
 - [ ] Re-queue failed Tasks on retry decision
 
-### 6.4 Two-Phase Campaigns
+### 5.4 Two-Phase Campaigns
 
 - [ ] Support `phases` configuration with discover and transform phases
 - [ ] Filter repositories based on discovery results
 - [ ] Pass discovery data to transform phase
 
-### 6.5 CLI Support
+### 5.5 CLI Support
 
 - [ ] `orchestrator campaign run --file campaign.yaml`
 - [ ] `orchestrator campaign status <id>`
@@ -521,6 +457,76 @@ orchestrator campaign status slog-migration-campaign-abc123
 
 # Handle pause on threshold
 orchestrator campaign continue slog-migration-campaign-abc123
+```
+
+---
+
+## Phase 6: Kubernetes Jobs Sandbox Provider
+
+**Goal**: Run sandboxes on Kubernetes using Jobs for production workloads.
+
+> **Design Rationale**: Plain Kubernetes Jobs are simpler than custom CRDs and
+> sufficient for ephemeral transformation workloads. The Temporal worker creates Jobs,
+> execs into them, and deletes them when done.
+
+### 6.1 Kubernetes Sandbox Provider
+
+- [ ] Implement `Provider` interface for K8s using client-go
+- [ ] `Provision()` - create Job with pod template
+- [ ] `WaitReady()` - wait for pod Running state
+- [ ] `Exec()` - exec into pod via K8s API (like kubectl exec)
+- [ ] `Cleanup()` - delete Job (or rely on TTL)
+
+### 6.2 Job Specification
+
+- [ ] Generate Job spec from Task settings
+- [ ] Configure resources (CPU, memory) from spec
+- [ ] Set `runtimeClassName` for gVisor if specified
+- [ ] Apply node selectors and tolerations
+- [ ] Mount secrets for GitHub token, API keys
+- [ ] Set `ttlSecondsAfterFinished` for automatic cleanup
+
+### 6.3 Provider Selection
+
+- [ ] Factory function based on `SANDBOX_PROVIDER` env var
+- [ ] Auto-detect: Docker socket → Docker, ServiceAccount → Kubernetes
+- [ ] Fallback chain: Kubernetes → Docker → error
+
+### 6.4 Namespace and Multi-tenancy
+
+- [ ] Configurable sandbox namespace (default: `sandbox-isolated`)
+- [ ] Support namespace-per-team for isolation
+- [ ] ResourceQuota enforcement per namespace
+
+### 6.5 Local K8s Testing
+
+- [ ] kind cluster setup script
+- [ ] Integration tests against real cluster
+- [ ] CI pipeline with kind
+
+### Deliverable
+
+```yaml
+# config.yaml
+sandbox:
+  provider: kubernetes
+  namespace: sandbox-isolated
+  image: your-org/claude-sandbox:latest
+  serviceAccount: sandbox-runner
+  nodeSelector:
+    workload-type: sandbox
+  runtimeClassName: gvisor  # optional
+  resources:
+    defaultLimits:
+      memory: "4Gi"
+      cpu: "2"
+```
+
+```bash
+# Worker creates this Job:
+kubectl get jobs -n sandbox-isolated
+NAME                      COMPLETIONS   DURATION   AGE
+task-abc123               0/1           2m         2m
 ```
 
 ---
@@ -716,9 +722,9 @@ helm install codetransform ./charts/codetransform \
 | 2 | PR Creation | Multi-repo with GitHub PRs | ✅ Complete |
 | 3 | Deterministic | Docker-based transformations | ✅ Complete |
 | 4 | Report Mode | Discovery and analysis (no PRs) | ✅ Complete |
-| 4b | **forEach Discovery** | Multi-target iteration within repos | ⬜ Not started |
-| 5 | **Kubernetes Jobs** | K8s sandbox provider | ⬜ Not started |
-| 6 | **Campaign** | Batch orchestration, failure handling | ⬜ Not started |
+| 4b | forEach Discovery | Multi-target iteration within repos | ✅ Complete |
+| 5 | **Campaign** | Batch orchestration, failure handling | ⬜ Not started |
+| 6 | **Kubernetes Jobs** | K8s sandbox provider | ⬜ Not started |
 | 7 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |
 | 8 | **Security** | RBAC, NetworkPolicy, secrets, scaling | ⬜ Not started |
 | 9 | Advanced | HITL steering, scheduling, cost tracking | 🟡 ~20% (basic HITL) |
@@ -728,19 +734,18 @@ Each phase builds on the previous and delivers working functionality.
 ### Recommended Next Steps
 
 **Parallel Track A (Product Capabilities):**
-1. **Phase 4** - Report mode for discovery (enables two-phase campaigns)
-2. **Phase 6** - Campaign orchestration (scales to fleet-wide operations)
-3. **Phase 9.2** - Iterative HITL steering (key differentiator)
+1. **Phase 5** - Campaign orchestration (scales to fleet-wide operations)
+2. **Phase 9.2** - Iterative HITL steering (key differentiator)
 
 **Parallel Track B (Production Infrastructure):**
-1. **Phase 5** - Kubernetes Jobs sandbox provider
+1. **Phase 6** - Kubernetes Jobs sandbox provider
 2. **Phase 7** - Observability (needed to tune production)
 3. **Phase 8** - Security hardening
 
-> **Priority Note**: Report mode (Phase 4) and Campaign orchestration (Phase 6) are core
-> platform capabilities. They enable the two-phase discover → transform pattern which is
-> valuable for security audits, dependency inventories, and targeted migrations.
-> Both can be developed in parallel using the existing Docker sandbox.
+> **Priority Note**: Campaign orchestration (Phase 5) is the next core platform capability.
+> It enables the two-phase discover → transform pattern which is valuable for security audits,
+> dependency inventories, and targeted migrations. Campaigns can be developed using the
+> existing Docker sandbox before adding Kubernetes support.
 
 ### Key Changes from Previous Plan
 

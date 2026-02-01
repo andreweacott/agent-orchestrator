@@ -142,6 +142,7 @@ func init() {
 	// Reports command flags
 	reportsCmd.Flags().StringP("output", "o", "table", "Output format (table, json)")
 	reportsCmd.Flags().Bool("frontmatter-only", false, "Show only frontmatter data")
+	reportsCmd.Flags().String("target", "", "Filter to specific target (forEach mode)")
 
 	// Add commands
 	rootCmd.AddCommand(runCmd)
@@ -168,7 +169,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			"workflow_id": workflowID,
 			"status":      string(status),
 		}
-		data, _ := json.MarshalIndent(result, "", "  ")
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal output: %w", err)
+		}
 		fmt.Println(string(data))
 		return nil
 	}
@@ -193,7 +197,10 @@ func runResult(cmd *cobra.Command, args []string) error {
 	}
 
 	if output == "json" {
-		data, _ := json.MarshalIndent(result, "", "  ")
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal output: %w", err)
+		}
 		fmt.Println(string(data))
 		return nil
 	}
@@ -294,7 +301,10 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	if output == "json" {
-		data, _ := json.MarshalIndent(workflows, "", "  ")
+		data, err := json.MarshalIndent(workflows, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal output: %w", err)
+		}
 		fmt.Println(string(data))
 		return nil
 	}
@@ -438,7 +448,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if executionType == model.ExecutionTypeDeterministic {
 			result["image"] = task.Execution.Deterministic.Image
 		}
-		data, _ := json.MarshalIndent(result, "", "  ")
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal output: %w", err)
+		}
 		fmt.Println(string(data))
 		return nil
 	}
@@ -493,6 +506,7 @@ func runReports(cmd *cobra.Command, args []string) error {
 	workflowID := args[0]
 	output, _ := cmd.Flags().GetString("output")
 	frontmatterOnly, _ := cmd.Flags().GetBool("frontmatter-only")
+	targetFilter, _ := cmd.Flags().GetString("target")
 
 	result, err := client.GetWorkflowResult(context.Background(), workflowID)
 	if err != nil {
@@ -507,18 +521,57 @@ func runReports(cmd *cobra.Command, args []string) error {
 	if output == "json" {
 		var outputData interface{}
 		if frontmatterOnly {
-			// Extract just frontmatter from each repo
-			frontmatters := make(map[string]map[string]any)
+			// Extract just frontmatter from each repo/target
+			frontmatters := make(map[string]interface{})
 			for _, repo := range result.Repositories {
-				if repo.Report != nil && repo.Report.Frontmatter != nil {
-					frontmatters[repo.Repository] = repo.Report.Frontmatter
+				if len(repo.ForEachResults) > 0 {
+					// forEach mode: organize by target
+					targetFrontmatters := make(map[string]map[string]any)
+					for _, fe := range repo.ForEachResults {
+						if targetFilter != "" && fe.Target.Name != targetFilter {
+							continue
+						}
+						if fe.Report != nil && fe.Report.Frontmatter != nil {
+							targetFrontmatters[fe.Target.Name] = fe.Report.Frontmatter
+						}
+					}
+					frontmatters[repo.Repository] = targetFrontmatters
+				} else {
+					// Single report mode
+					if repo.Report != nil && repo.Report.Frontmatter != nil {
+						frontmatters[repo.Repository] = repo.Report.Frontmatter
+					}
 				}
 			}
 			outputData = frontmatters
 		} else {
-			outputData = result.Repositories
+			// Filter by target if specified
+			if targetFilter != "" {
+				filteredRepos := make([]model.RepositoryResult, 0, len(result.Repositories))
+				for _, repo := range result.Repositories {
+					if len(repo.ForEachResults) > 0 {
+						filteredResults := make([]model.ForEachExecution, 0)
+						for _, fe := range repo.ForEachResults {
+							if fe.Target.Name == targetFilter {
+								filteredResults = append(filteredResults, fe)
+							}
+						}
+						if len(filteredResults) > 0 {
+							filteredRepo := repo
+							filteredRepo.ForEachResults = filteredResults
+							filteredRepos = append(filteredRepos, filteredRepo)
+						}
+					}
+				}
+				outputData = filteredRepos
+			} else {
+				outputData = result.Repositories
+			}
 		}
-		data, _ := json.MarshalIndent(outputData, "", "  ")
+		data, err := json.MarshalIndent(outputData, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal output: %w", err)
+		}
 		fmt.Println(string(data))
 		return nil
 	}
@@ -537,44 +590,82 @@ func runReports(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		if repo.Report == nil {
-			fmt.Println("  No report collected")
+		// Check if this is forEach mode
+		if len(repo.ForEachResults) > 0 {
+			fmt.Printf("  Targets: %d\n\n", len(repo.ForEachResults))
+
+			for _, fe := range repo.ForEachResults {
+				// Filter by target if specified
+				if targetFilter != "" && fe.Target.Name != targetFilter {
+					continue
+				}
+
+				fmt.Printf("  Target: %s\n", fe.Target.Name)
+				if fe.Target.Context != "" {
+					fmt.Printf("    Context: %s\n", fe.Target.Context)
+				}
+
+				if fe.Error != nil {
+					fmt.Printf("    Error: %s\n", *fe.Error)
+					fmt.Println()
+					continue
+				}
+
+				if fe.Report == nil {
+					fmt.Println("    No report collected")
+					fmt.Println()
+					continue
+				}
+
+				displayReport(fe.Report, "    ", frontmatterOnly)
+				fmt.Println()
+			}
+		} else {
+			// Single report mode (existing behavior)
+			if repo.Report == nil {
+				fmt.Println("  No report collected")
+				fmt.Println()
+				continue
+			}
+
+			displayReport(repo.Report, "  ", frontmatterOnly)
 			fmt.Println()
-			continue
 		}
-
-		if repo.Report.Error != "" {
-			fmt.Printf("  Parse Error: %s\n", repo.Report.Error)
-		}
-
-		if len(repo.Report.ValidationErrors) > 0 {
-			fmt.Println("  Validation Errors:")
-			for _, verr := range repo.Report.ValidationErrors {
-				fmt.Printf("    - %s\n", verr)
-			}
-		}
-
-		if repo.Report.Frontmatter != nil {
-			fmt.Println("  Frontmatter:")
-			for k, v := range repo.Report.Frontmatter {
-				fmt.Printf("    %s: %v\n", k, v)
-			}
-		}
-
-		if !frontmatterOnly && repo.Report.Body != "" {
-			fmt.Println("  Body:")
-			// Show first 200 chars of body
-			body := repo.Report.Body
-			if len(body) > 200 {
-				body = body[:200] + "..."
-			}
-			fmt.Printf("    %s\n", strings.ReplaceAll(body, "\n", "\n    "))
-		}
-
-		fmt.Println()
 	}
 
 	return nil
+}
+
+// displayReport displays a single report's content with the given indent prefix.
+func displayReport(report *model.ReportOutput, indent string, frontmatterOnly bool) {
+	if report.Error != "" {
+		fmt.Printf("%sParse Error: %s\n", indent, report.Error)
+	}
+
+	if len(report.ValidationErrors) > 0 {
+		fmt.Printf("%sValidation Errors:\n", indent)
+		for _, verr := range report.ValidationErrors {
+			fmt.Printf("%s  - %s\n", indent, verr)
+		}
+	}
+
+	if report.Frontmatter != nil {
+		fmt.Printf("%sFrontmatter:\n", indent)
+		for k, v := range report.Frontmatter {
+			fmt.Printf("%s  %s: %v\n", indent, k, v)
+		}
+	}
+
+	if !frontmatterOnly && report.Body != "" {
+		fmt.Printf("%sBody:\n", indent)
+		body := report.Body
+		// Use rune slicing to avoid splitting multi-byte UTF-8 characters
+		bodyRunes := []rune(body)
+		if len(bodyRunes) > 200 {
+			body = string(bodyRunes[:200]) + "..."
+		}
+		fmt.Printf("%s  %s\n", indent, strings.ReplaceAll(body, "\n", "\n"+indent+"  "))
+	}
 }
 
 func main() {
