@@ -2,7 +2,7 @@
 
 Incremental implementation phases for the code transformation and discovery platform.
 
-> **Last Updated**: 2026-02-01 (Design Restructure - DESIGN.md and OVERVIEW.md split)
+> **Last Updated**: 2026-02-01 (Phase 4 Report Mode complete; Phase 4b added for forEach)
 >
 > **Note**: Implementation uses Task/Campaign terminology aligned with the design documents.
 >
@@ -179,39 +179,36 @@ orchestrator run \
 
 ### 4.1 Core Report Mode
 
-- [ ] Add `mode` field to Task: `transform` (default) or `report`
-- [ ] Skip PR creation workflow when `mode: report`
-- [ ] Capture agent stdout as structured output
-- [ ] Store report in Task result
-- [ ] Update workflow to branch based on mode
+- [x] Add `mode` field to Task: `transform` (default) or `report`
+- [x] Skip PR creation workflow when `mode: report`
+- [x] Capture agent stdout as structured output
+- [x] Store report in Task result
+- [x] Update workflow to branch based on mode
 
 ### 4.2 Report Output Collection
 
-- [ ] `CollectReport` activity - read `/workspace/REPORT.md` from sandbox
-- [ ] Parse frontmatter (YAML between `---` delimiters) from markdown
-- [ ] Store both structured frontmatter and prose body in result
-- [ ] Append output instructions to prompt for report mode tasks
+- [x] `CollectReport` activity - read `/workspace/REPORT.md` from sandbox
+- [x] Parse frontmatter (YAML between `---` delimiters) from markdown
+- [x] Store both structured frontmatter and prose body in result
+- [x] Append output instructions to prompt for report mode tasks
 
 ### 4.3 Frontmatter Schema Validation
 
-- [ ] Parse `output.schema` (JSON Schema) from Task spec
-- [ ] Validate frontmatter against schema
-- [ ] Report validation errors in result
-- [ ] Support common types: object, array, string, number, boolean, enum
+- [x] Parse `output.schema` (JSON Schema) from Task spec
+- [x] Validate frontmatter against schema
+- [x] Report validation errors in result
+- [x] Support common types: object, array, string, number, boolean, enum
 
 ### 4.4 forEach: Multi-Target Discovery
 
-- [ ] Add `for_each[]` field for iterating within a repo
-- [ ] Each target gets its own execution with context variable
-- [ ] Template variable substitution in prompt: `{{.context}}`, `{{.name}}`
-- [ ] Aggregate reports by target in result
+> **Moved to Phase 4b** - See dedicated phase below for forEach implementation.
 
 ### 4.5 CLI Support
 
-- [ ] `orchestrator run --mode report --prompt "..."` - run discovery
-- [ ] `orchestrator reports <workflow-id>` - view collected reports
-- [ ] `orchestrator reports <workflow-id> --output json` - export reports
-- [ ] Update `status` command to show reports for report-mode tasks
+- [x] `orchestrator run --mode report --prompt "..."` - run discovery
+- [x] `orchestrator reports <workflow-id>` - view collected reports
+- [x] `orchestrator reports <workflow-id> --output json` - export reports
+- [x] Update `status` command to show reports for report-mode tasks
 
 ### Deliverable
 
@@ -275,6 +272,88 @@ orchestrator reports auth-audit-xyz789
 # Export structured data (frontmatter) for aggregation
 orchestrator reports auth-audit-xyz789 --format json > results.json
 # [{"repository": "service-a", "frontmatter": {"auth_library": "oauth2", ...}}, ...]
+```
+
+---
+
+## Phase 4b: forEach Multi-Target Discovery
+
+**Goal**: Enable iterating over multiple targets within a single repository for fine-grained discovery.
+
+> **Design Rationale**: forEach enables analyzing multiple components within a repo (e.g., each
+> microservice in a monorepo, each API endpoint, each config file) with separate reports per target.
+> This is useful for detailed audits where a single repo contains many analyzable units.
+
+### 4b.1 Data Model
+
+- [ ] Add `for_each[]` field to Task for defining iteration targets
+- [ ] Add `ForEachExecution` struct to track per-target results *(model exists, not yet used)*
+- [ ] Add `ForEachResults` to `RepositoryResult` *(field exists, not yet populated)*
+
+### 4b.2 Template Substitution
+
+- [ ] Parse `{{.name}}` and `{{.context}}` variables in prompt
+- [ ] Inject target context into each execution
+- [ ] Support nested variable paths: `{{.target.path}}`
+
+### 4b.3 Workflow Changes
+
+- [ ] Loop over `for_each` targets within each repository
+- [ ] Execute agent once per target with substituted prompt
+- [ ] Collect report per target (namespaced as `REPORT-{target.name}.md` or single file)
+- [ ] Aggregate `ForEachExecution` results in `RepositoryResult`
+
+### 4b.4 CLI Support
+
+- [ ] Display per-target reports in `orchestrator reports` command
+- [ ] Support `--target <name>` filter for viewing specific target reports
+- [ ] JSON export includes target-level grouping
+
+### Deliverable
+
+```yaml
+# forEach discovery example
+version: 1
+id: api-endpoint-audit
+title: "Audit all API endpoints"
+mode: report
+
+repositories:
+  - url: https://github.com/org/api-gateway.git
+
+for_each:
+  - name: users-api
+    context: "The /users endpoint in src/routes/users.go"
+  - name: orders-api
+    context: "The /orders endpoint in src/routes/orders.go"
+  - name: payments-api
+    context: "The /payments endpoint in src/routes/payments.go"
+
+execution:
+  agentic:
+    prompt: |
+      Analyze {{.name}}: {{.context}}
+
+      Check for: authentication, rate limiting, input validation.
+      Write your findings to /workspace/REPORT.md
+```
+
+```bash
+# Run forEach discovery
+orchestrator run --file api-audit.yaml
+
+# View all target reports
+orchestrator reports <workflow-id>
+# Repository: api-gateway
+#   Target: users-api
+#     Frontmatter: {auth: "jwt", rate_limit: true, ...}
+#   Target: orders-api
+#     Frontmatter: {auth: "jwt", rate_limit: false, ...}
+#   Target: payments-api
+#     Frontmatter: {auth: "jwt", rate_limit: true, ...}
+
+# Export as JSON for aggregation
+orchestrator reports <workflow-id> --output json
 ```
 
 ---
@@ -636,7 +715,8 @@ helm install codetransform ./charts/codetransform \
 | 1 | Local MVP | Single-repo agentic task with Docker | ✅ Complete |
 | 2 | PR Creation | Multi-repo with GitHub PRs | ✅ Complete |
 | 3 | Deterministic | Docker-based transformations | ✅ Complete |
-| 4 | **Report Mode** | Discovery and analysis (no PRs) | ⬜ Not started |
+| 4 | Report Mode | Discovery and analysis (no PRs) | ✅ Complete |
+| 4b | **forEach Discovery** | Multi-target iteration within repos | ⬜ Not started |
 | 5 | **Kubernetes Jobs** | K8s sandbox provider | ⬜ Not started |
 | 6 | **Campaign** | Batch orchestration, failure handling | ⬜ Not started |
 | 7 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |

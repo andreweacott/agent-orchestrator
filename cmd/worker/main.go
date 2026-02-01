@@ -54,6 +54,7 @@ func main() {
 	deterministicActivities := activity.NewDeterministicActivities(dockerProvider)
 	githubActivities := activity.NewGitHubActivities(dockerProvider)
 	slackActivities := activity.NewSlackActivities()
+	reportActivities := activity.NewReportActivities(dockerProvider)
 
 	// Create worker
 	w := worker.New(c, internalclient.TaskQueue, worker.Options{})
@@ -71,6 +72,8 @@ func main() {
 	w.RegisterActivity(deterministicActivities.ExecuteDeterministic)
 	w.RegisterActivity(githubActivities.CreatePullRequest)
 	w.RegisterActivity(slackActivities.NotifySlack)
+	w.RegisterActivity(reportActivities.CollectReport)
+	w.RegisterActivity(reportActivities.ValidateSchema)
 
 	log.Println("Worker started. Press Ctrl+C to stop.")
 

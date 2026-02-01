@@ -381,20 +381,67 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 
 	// 7. Handle based on mode
 	if task.GetMode() == model.TaskModeReport {
-		// Report mode: skip PR creation, return completed result
-		// TODO: Phase 4 - implement CollectReport activity to read /workspace/REPORT.md
+		// Report mode: collect reports, skip PR creation
+		logger.Info("Collecting reports", "repos", len(task.Repositories))
+
+		var repoResults []model.RepositoryResult
+
+		for _, repo := range task.Repositories {
+			repoResult := model.RepositoryResult{
+				Repository: repo.Name,
+				Status:     "success",
+			}
+
+			// Call CollectReport activity
+			collectInput := activity.CollectReportInput{
+				ContainerID: sandbox.ContainerID,
+				RepoName:    repo.Name,
+			}
+
+			var report *model.ReportOutput
+			err := workflow.ExecuteActivity(ctx, activity.ActivityCollectReport, collectInput).Get(ctx, &report)
+
+			if err != nil {
+				errStr := err.Error()
+				repoResult.Status = "failed"
+				repoResult.Error = &errStr
+				logger.Warn("Failed to collect report", "repo", repo.Name, "error", err)
+			} else {
+				repoResult.Report = report
+
+				// Validate schema if specified
+				if hasSchema(task) && report != nil && report.Frontmatter != nil {
+					schemaInput := activity.ValidateSchemaInput{
+						Frontmatter: report.Frontmatter,
+						Schema:      string(task.Execution.Agentic.Output.Schema),
+					}
+
+					var validationErrors []string
+					err := workflow.ExecuteActivity(ctx, activity.ActivityValidateSchema, schemaInput).Get(ctx, &validationErrors)
+					if err != nil {
+						logger.Warn("Schema validation activity failed", "repo", repo.Name, "error", err)
+					} else if len(validationErrors) > 0 {
+						repoResult.Report.ValidationErrors = validationErrors
+						logger.Info("Schema validation errors", "repo", repo.Name, "errors", validationErrors)
+					}
+				}
+			}
+
+			repoResults = append(repoResults, repoResult)
+		}
+
 		status = model.TaskStatusCompleted
 		signalDone()
 		duration := workflow.Now(ctx).Sub(startTime).Seconds()
 
-		logger.Info("Report mode task completed", "filesModified", len(filesModified))
+		logger.Info("Report mode task completed", "repos", len(repoResults))
 
 		return &model.TaskResult{
 			TaskID:          task.ID,
 			Status:          model.TaskStatusCompleted,
 			Mode:            model.TaskModeReport,
+			Repositories:    repoResults,
 			DurationSeconds: &duration,
-			// TODO: Populate Repositories with ReportOutput when Phase 4 is implemented
 		}, nil
 	}
 
@@ -542,7 +589,37 @@ func buildPrompt(task model.Task) string {
 		sb.WriteString("\nFix any errors before completing the task. All verifiers must pass.")
 	}
 
+	// Append report mode instructions if in report mode
+	if task.GetMode() == model.TaskModeReport {
+		sb.WriteString("\n\n## Output Requirements\n\n")
+		if len(task.Repositories) == 1 {
+			sb.WriteString(fmt.Sprintf("Write your report to `/workspace/%s/REPORT.md` with YAML frontmatter:\n\n", task.Repositories[0].Name))
+		} else {
+			sb.WriteString("For each repository, write a report to `/workspace/{repo-name}/REPORT.md` with YAML frontmatter:\n\n")
+			for _, repo := range task.Repositories {
+				sb.WriteString(fmt.Sprintf("- `/workspace/%s/REPORT.md`\n", repo.Name))
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```markdown\n---\nkey: value\nanother_key: value\n---\n\n# Report\n\nYour analysis and findings here.\n```\n\n")
+		sb.WriteString("The frontmatter section (between `---` delimiters) should contain structured data.\n")
+		sb.WriteString("The body section (after the closing `---`) should contain your detailed analysis.\n")
+
+		if hasSchema(task) {
+			sb.WriteString("\nThe frontmatter must conform to this JSON Schema:\n\n```json\n")
+			sb.WriteString(string(task.Execution.Agentic.Output.Schema))
+			sb.WriteString("\n```\n")
+		}
+	}
+
 	return sb.String()
+}
+
+// hasSchema checks if the task has a JSON Schema defined for report validation.
+func hasSchema(task model.Task) bool {
+	return task.Execution.Agentic != nil &&
+		task.Execution.Agentic.Output != nil &&
+		len(task.Execution.Agentic.Output.Schema) > 0
 }
 
 // buildPRDescriptionWithFiles creates the PR description with a list of modified files.

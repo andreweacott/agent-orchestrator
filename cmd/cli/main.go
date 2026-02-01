@@ -85,6 +85,14 @@ var runCmd = &cobra.Command{
 	RunE:  runRun,
 }
 
+var reportsCmd = &cobra.Command{
+	Use:   "reports <workflow-id>",
+	Short: "View reports from completed workflow",
+	Long:  "Display reports collected from a report-mode workflow",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runReports,
+}
+
 func init() {
 	// Run command flags (matches design doc interface)
 	runCmd.Flags().StringP("file", "f", "", "Path to task YAML file")
@@ -101,6 +109,9 @@ func init() {
 	runCmd.Flags().String("image", "", "Docker image for deterministic transformation")
 	runCmd.Flags().StringArray("args", []string{}, "Arguments for transformation container")
 	runCmd.Flags().StringArray("env", []string{}, "Environment variables (KEY=VALUE format)")
+
+	// Mode flag
+	runCmd.Flags().String("mode", "transform", "Task mode: transform or report")
 
 	// Status command flags
 	statusCmd.Flags().String("workflow-id", "", "Workflow ID (required)")
@@ -128,6 +139,10 @@ func init() {
 	listCmd.Flags().String("status", "", "Filter by status (Running, Completed, Failed, Canceled, Terminated)")
 	listCmd.Flags().StringP("output", "o", "table", "Output format (table, json)")
 
+	// Reports command flags
+	reportsCmd.Flags().StringP("output", "o", "table", "Output format (table, json)")
+	reportsCmd.Flags().Bool("frontmatter-only", false, "Show only frontmatter data")
+
 	// Add commands
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(statusCmd)
@@ -136,6 +151,7 @@ func init() {
 	rootCmd.AddCommand(rejectCmd)
 	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(reportsCmd)
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -194,20 +210,40 @@ func runResult(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Duration: %.2f seconds\n", *result.DurationSeconds)
 	}
 
-	// Check for PRs in repository results
-	var hasPRs bool
-	for _, repo := range result.Repositories {
-		if repo.PullRequest != nil {
-			hasPRs = true
-			break
+	// Show mode-specific information
+	if result.Mode == model.TaskModeReport {
+		// Report mode: show report count
+		var reportCount, errorCount int
+		for _, repo := range result.Repositories {
+			if repo.Report != nil {
+				reportCount++
+			}
+			if repo.Error != nil || (repo.Report != nil && repo.Report.Error != "") {
+				errorCount++
+			}
 		}
-	}
-	if hasPRs {
-		fmt.Printf("  Pull Requests:\n")
+		fmt.Printf("  Mode: report\n")
+		fmt.Printf("  Reports collected: %d\n", reportCount)
+		if errorCount > 0 {
+			fmt.Printf("  Errors: %d\n", errorCount)
+		}
+		fmt.Printf("\n  Use 'orchestrator reports %s' to view report details.\n", workflowID)
+	} else {
+		// Transform mode: show PRs
+		var hasPRs bool
 		for _, repo := range result.Repositories {
 			if repo.PullRequest != nil {
-				pr := repo.PullRequest
-				fmt.Printf("    - %s (#%d): %s\n", pr.RepoName, pr.PRNumber, pr.PRURL)
+				hasPRs = true
+				break
+			}
+		}
+		if hasPRs {
+			fmt.Printf("  Pull Requests:\n")
+			for _, repo := range result.Repositories {
+				if repo.PullRequest != nil {
+					pr := repo.PullRequest
+					fmt.Printf("    - %s (#%d): %s\n", pr.RepoName, pr.PRNumber, pr.PRURL)
+				}
 			}
 		}
 	}
@@ -285,6 +321,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	var task *model.Task
 
+	mode, _ := cmd.Flags().GetString("mode")
+
 	if filePath != "" {
 		// Load from YAML file using versioned loader
 		var err error
@@ -292,9 +330,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to load task file: %w", err)
 		}
-		// CLI flag can override file setting
+		// CLI flags can override file settings
 		if parallel {
 			task.Parallel = true
+		}
+		if mode != "" && mode != "transform" {
+			task.Mode = model.TaskMode(mode)
 		}
 	} else {
 		// Build from flags
@@ -340,12 +381,18 @@ func runRun(cmd *cobra.Command, args []string) error {
 			title = fmt.Sprintf("Deterministic transformation: %s", image)
 		}
 
+		// Determine task mode
+		taskMode := model.TaskModeTransform
+		if mode == "report" {
+			taskMode = model.TaskModeReport
+		}
+
 		// Build task
 		task = &model.Task{
 			Version:         model.SchemaVersion,
 			ID:              taskID,
 			Title:           title,
-			Mode:            model.TaskModeTransform,
+			Mode:            taskMode,
 			Repositories:    repositories,
 			Timeout:         timeout,
 			RequireApproval: !noApproval,
@@ -380,6 +427,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			"task_id":          task.ID,
 			"title":            task.Title,
 			"workflow_id":      workflowID,
+			"mode":             string(task.GetMode()),
 			"repositories":     len(task.Repositories),
 			"verifiers":        len(task.Execution.GetVerifiers()),
 			"require_approval": task.RequireApproval,
@@ -398,6 +446,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Starting task...\n")
 	fmt.Printf("  Task ID: %s\n", task.ID)
 	fmt.Printf("  Title: %s\n", task.Title)
+	fmt.Printf("  Mode: %s\n", task.GetMode())
 	fmt.Printf("  Execution Type: %s\n", executionType)
 	if executionType == model.ExecutionTypeDeterministic {
 		fmt.Printf("  Image: %s\n", task.Execution.Deterministic.Image)
@@ -438,6 +487,94 @@ func parseEnvVars(envStrs []string) map[string]string {
 		}
 	}
 	return env
+}
+
+func runReports(cmd *cobra.Command, args []string) error {
+	workflowID := args[0]
+	output, _ := cmd.Flags().GetString("output")
+	frontmatterOnly, _ := cmd.Flags().GetBool("frontmatter-only")
+
+	result, err := client.GetWorkflowResult(context.Background(), workflowID)
+	if err != nil {
+		return fmt.Errorf("failed to get workflow result: %w", err)
+	}
+
+	// Check if this is a report-mode task
+	if result.Mode != model.TaskModeReport {
+		return fmt.Errorf("workflow %s is not a report-mode task (mode: %s)", workflowID, result.Mode)
+	}
+
+	if output == "json" {
+		var outputData interface{}
+		if frontmatterOnly {
+			// Extract just frontmatter from each repo
+			frontmatters := make(map[string]map[string]any)
+			for _, repo := range result.Repositories {
+				if repo.Report != nil && repo.Report.Frontmatter != nil {
+					frontmatters[repo.Repository] = repo.Report.Frontmatter
+				}
+			}
+			outputData = frontmatters
+		} else {
+			outputData = result.Repositories
+		}
+		data, _ := json.MarshalIndent(outputData, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Table output
+	fmt.Printf("Reports for workflow: %s\n", workflowID)
+	fmt.Printf("Status: %s\n\n", result.Status)
+
+	for _, repo := range result.Repositories {
+		fmt.Printf("Repository: %s\n", repo.Repository)
+		fmt.Printf("  Status: %s\n", repo.Status)
+
+		if repo.Error != nil {
+			fmt.Printf("  Error: %s\n", *repo.Error)
+			fmt.Println()
+			continue
+		}
+
+		if repo.Report == nil {
+			fmt.Println("  No report collected")
+			fmt.Println()
+			continue
+		}
+
+		if repo.Report.Error != "" {
+			fmt.Printf("  Parse Error: %s\n", repo.Report.Error)
+		}
+
+		if len(repo.Report.ValidationErrors) > 0 {
+			fmt.Println("  Validation Errors:")
+			for _, verr := range repo.Report.ValidationErrors {
+				fmt.Printf("    - %s\n", verr)
+			}
+		}
+
+		if repo.Report.Frontmatter != nil {
+			fmt.Println("  Frontmatter:")
+			for k, v := range repo.Report.Frontmatter {
+				fmt.Printf("    %s: %v\n", k, v)
+			}
+		}
+
+		if !frontmatterOnly && repo.Report.Body != "" {
+			fmt.Println("  Body:")
+			// Show first 200 chars of body
+			body := repo.Report.Body
+			if len(body) > 200 {
+				body = body[:200] + "..."
+			}
+			fmt.Printf("    %s\n", strings.ReplaceAll(body, "\n", "\n    "))
+		}
+
+		fmt.Println()
+	}
+
+	return nil
 }
 
 func main() {
