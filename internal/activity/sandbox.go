@@ -439,8 +439,17 @@ func (a *SandboxActivities) cloneRepos(ctx context.Context, containerID string, 
 }
 
 // CleanupSandbox stops and removes the sandbox container.
+// If DEBUG_NO_CLEANUP environment variable is set to "true", cleanup is skipped
+// to allow inspection of failed containers.
 func (a *SandboxActivities) CleanupSandbox(ctx context.Context, containerID string) error {
 	logger := activity.GetLogger(ctx)
+
+	// Check if cleanup should be skipped (debug mode)
+	if os.Getenv("DEBUG_NO_CLEANUP") == "true" {
+		logger.Info("Skipping container cleanup (DEBUG_NO_CLEANUP=true)", "containerID", shortContainerID(containerID))
+		return nil
+	}
+
 	logger.Info("Cleaning up container", "containerID", shortContainerID(containerID))
 
 	if err := a.Provider.Cleanup(ctx, containerID); err != nil {

@@ -30,6 +30,10 @@ services:
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
       - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+      - TEMPORAL_UI_ENABLED=true
+      - TEMPORAL_NOTIFY_ON_NEW_VERSION=false
+      # Enable refresh for live updates
+      - TEMPORAL_REFRESH_WORKFLOW_TIMEOUT=1000
     depends_on:
       temporal:
         condition: service_healthy

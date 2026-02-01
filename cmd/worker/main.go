@@ -2,6 +2,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 
@@ -16,6 +17,15 @@ import (
 )
 
 func main() {
+	// Parse command-line flags
+	debugNoCleanup := flag.Bool("debug-no-cleanup", false, "Skip container cleanup on failure (for debugging)")
+	flag.Parse()
+
+	// Set environment variable for activities to check
+	if *debugNoCleanup {
+		os.Setenv("DEBUG_NO_CLEANUP", "true")
+		log.Println("DEBUG MODE: Container cleanup disabled - containers will persist after workflow completion")
+	}
 	// Validate configuration at startup
 	configMode := activity.ConfigModeWarn
 	if os.Getenv("REQUIRE_CONFIG") == "true" {

@@ -303,12 +303,21 @@ func (t Task) UsesTransformationRepo() bool {
 }
 
 // GetEffectiveRepositories returns the repositories to operate on.
-// When using transformation mode, returns Targets; otherwise returns Repositories.
+// When using transformation mode, returns Targets.
+// Otherwise returns Repositories, or flattens Groups if Repositories is empty.
 func (t Task) GetEffectiveRepositories() []Repository {
 	if t.UsesTransformationRepo() {
 		return t.Targets
 	}
-	return t.Repositories
+	if len(t.Repositories) > 0 {
+		return t.Repositories
+	}
+	// Fall back to repositories from groups (flatten directly to avoid circular call)
+	var allRepos []Repository
+	for _, group := range t.Groups {
+		allRepos = append(allRepos, group.Repositories...)
+	}
+	return allRepos
 }
 
 // GetMaxParallel returns the max parallel limit, defaulting to DefaultMaxParallel.
@@ -321,29 +330,25 @@ func (t Task) GetMaxParallel() int {
 
 // GetExecutionGroups returns the groups to execute.
 // If Groups is explicitly set, returns it.
-// Otherwise, auto-generates groups from Repositories field for backward compatibility.
+// Otherwise, returns a single group with all repositories for backward compatibility.
 func (t Task) GetExecutionGroups() []RepositoryGroup {
 	// If groups are explicitly defined, use them
 	if len(t.Groups) > 0 {
 		return t.Groups
 	}
 
-	// Backward compatibility: auto-generate groups from repositories
+	// Backward compatibility: single group with all repos (combined/sequential strategy)
+	// This preserves the original behavior where all repos share one sandbox
 	effectiveRepos := t.GetEffectiveRepositories()
 	if len(effectiveRepos) == 0 {
 		return nil
 	}
 
-	// Create one group per repository for parallel execution by default
-	// This maintains backward compatibility with the old "parallel" behavior when multiple repos were used
-	var groups []RepositoryGroup
-	for _, repo := range effectiveRepos {
-		groups = append(groups, RepositoryGroup{
-			Name:         repo.Name,
-			Repositories: []Repository{repo},
-		})
-	}
-	return groups
+	// Create one group containing all repositories
+	return []RepositoryGroup{{
+		Name:         "default",
+		Repositories: effectiveRepos,
+	}}
 }
 
 // GetAllRepositoriesFromGroups returns a flat list of all repositories from all groups.

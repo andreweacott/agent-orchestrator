@@ -1,0 +1,51 @@
+# Smoke Test: Parallel Group Execution
+#
+# Quick test of parallel grouped execution using small repositories
+# Should complete in ~2-3 minutes total
+
+version: 1
+id: smoke-test-parallel
+title: "Smoke test: parallel group execution"
+description: "Quick verification of parallel grouped execution"
+mode: report
+
+# Small test repositories - each in its own group for parallel execution
+groups:
+  - name: group-1
+    repositories:
+      - url: https://github.com/golang/example.git
+        branch: master
+        name: golang-example
+
+  - name: group-2
+    repositories:
+      - url: https://github.com/kelseyhightower/envconfig.git
+        branch: master
+        name: envconfig
+
+# Run both groups in parallel
+max_parallel: 2
+
+execution:
+  agentic:
+    prompt: |
+      Quickly analyze this Go repository:
+
+      1. Read go.mod and note the Go version
+      2. Count the number of direct dependencies
+      3. Check if there's a README.md
+
+      Write a brief report to /workspace/{repo-name}/REPORT.md:
+
+      ---
+      go_version: "1.21"
+      direct_deps: 5
+      has_readme: true
+      ---
+
+      # Quick Analysis
+
+      Brief summary here.
+
+require_approval: false
+timeout: 5m

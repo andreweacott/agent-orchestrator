@@ -1,0 +1,48 @@
+# Minimal smoke test - just verify Claude Code runs on multiple repos in parallel
+
+version: 1
+id: smoke-test-minimal
+title: "Minimal parallel test"
+description: "Verify parallel execution works"
+mode: report
+
+groups:
+  - name: repo-1
+    repositories:
+      - url: https://github.com/kelseyhightower/envconfig.git
+        branch: master
+        name: envconfig
+
+  - name: repo-2
+    repositories:
+      - url: https://github.com/joho/godotenv.git
+        branch: main
+        name: godotenv
+
+max_parallel: 2
+
+execution:
+  agentic:
+    prompt: |
+      Analyze this repository and write a brief summary to /workspace/{repo-name}/REPORT.md
+
+      Include:
+      1. What does this library do? (1 sentence)
+      2. List the exported functions/types from the main package
+      3. What Go version does it require?
+
+      Format:
+      ---
+      purpose: "one line description"
+      go_version: "1.x"
+      exports:
+        - "FunctionName"
+        - "TypeName"
+      ---
+
+      # Summary
+
+      Brief explanation of the library.
+
+require_approval: false
+timeout: 2m

@@ -268,42 +268,98 @@ func TransformGroup(ctx workflow.Context, input GroupTransformInput) (*GroupTran
 		logger.Info("All verifiers passed", "group", group.Name)
 	}
 
-	// 5. Create pull requests for each repository in the group
-	logger.Info("Creating pull requests", "group", group.Name, "repos", len(group.Repositories))
-
+	// 5. Handle based on mode
 	var repoResults []model.RepositoryResult
-	for _, repo := range group.Repositories {
-		prInput := activity.CreatePullRequestInput{
-			ContainerID:             sandbox.ContainerID,
-			Repo:                    repo,
-			TaskID:                  task.ID,
-			Title:                   input.PRTitle,
-			Description:             input.PRDesc,
-			PRConfig:                task.PullRequest,
-			UseTransformationLayout: task.UsesTransformationRepo(),
-		}
 
-		var pr *model.PullRequest
-		if err := workflow.ExecuteActivity(ctx, activity.ActivityCreatePullRequest, prInput).Get(ctx, &pr); err != nil {
-			errMsg := fmt.Sprintf("Failed to create PR: %v", err)
-			repoResults = append(repoResults, model.RepositoryResult{
+	if task.GetMode() == model.TaskModeReport {
+		// Report mode: collect reports, skip PR creation
+		logger.Info("Collecting reports", "group", group.Name, "repos", len(group.Repositories))
+
+		for _, repo := range group.Repositories {
+			repoResult := model.RepositoryResult{
 				Repository: repo.Name,
-				Status:     "failed",
-				Error:      &errMsg,
-			})
-			continue
-		}
+				Status:     "success",
+			}
 
-		repoResults = append(repoResults, model.RepositoryResult{
-			Repository:    repo.Name,
-			Status:        "success",
-			FilesModified: filesModified,
-			PullRequest:   pr,
-		})
+			// Collect report for this repo
+			collectInput := activity.CollectReportInput{
+				ContainerID:             sandbox.ContainerID,
+				RepoName:                repo.Name,
+				UseTransformationLayout: task.UsesTransformationRepo(),
+			}
+
+			var report *model.ReportOutput
+			err := workflow.ExecuteActivity(ctx, activity.ActivityCollectReport, collectInput).Get(ctx, &report)
+
+			if err != nil {
+				errStr := err.Error()
+				repoResult.Status = "failed"
+				repoResult.Error = &errStr
+				logger.Warn("Failed to collect report", "repo", repo.Name, "error", err)
+			} else {
+				repoResult.Report = report
+
+				// Validate schema if specified
+				if task.Execution.Agentic != nil &&
+					task.Execution.Agentic.Output != nil &&
+					task.Execution.Agentic.Output.Schema != nil &&
+					report != nil && report.Frontmatter != nil {
+
+					schemaInput := activity.ValidateSchemaInput{
+						Frontmatter: report.Frontmatter,
+						Schema:      string(task.Execution.Agentic.Output.Schema),
+					}
+
+					var validationErrors []string
+					err := workflow.ExecuteActivity(ctx, activity.ActivityValidateSchema, schemaInput).Get(ctx, &validationErrors)
+					if err != nil {
+						logger.Warn("Schema validation activity failed", "repo", repo.Name, "error", err)
+					} else if len(validationErrors) > 0 {
+						repoResult.Report.ValidationErrors = validationErrors
+						logger.Info("Schema validation errors", "repo", repo.Name, "errors", validationErrors)
+					}
+				}
+			}
+
+			repoResults = append(repoResults, repoResult)
+		}
+	} else {
+		// Transform mode: create pull requests
+		logger.Info("Creating pull requests", "group", group.Name, "repos", len(group.Repositories))
+
+		for _, repo := range group.Repositories {
+			prInput := activity.CreatePullRequestInput{
+				ContainerID:             sandbox.ContainerID,
+				Repo:                    repo,
+				TaskID:                  task.ID,
+				Title:                   input.PRTitle,
+				Description:             input.PRDesc,
+				PRConfig:                task.PullRequest,
+				UseTransformationLayout: task.UsesTransformationRepo(),
+			}
+
+			var pr *model.PullRequest
+			if err := workflow.ExecuteActivity(ctx, activity.ActivityCreatePullRequest, prInput).Get(ctx, &pr); err != nil {
+				errMsg := fmt.Sprintf("Failed to create PR: %v", err)
+				repoResults = append(repoResults, model.RepositoryResult{
+					Repository: repo.Name,
+					Status:     "failed",
+					Error:      &errMsg,
+				})
+				continue
+			}
+
+			repoResults = append(repoResults, model.RepositoryResult{
+				Repository:    repo.Name,
+				Status:        "success",
+				FilesModified: filesModified,
+				PullRequest:   pr,
+			})
+		}
 	}
 
 	duration := workflow.Now(ctx).Sub(startTime)
-	logger.Info("Group transform completed", "group", group.Name, "duration", duration)
+	logger.Info("Group workflow completed", "group", group.Name, "mode", task.GetMode(), "duration", duration)
 
 	return &GroupTransformResult{
 		GroupName:    group.Name,
@@ -333,10 +389,16 @@ func buildPromptForGroup(task model.Task, group model.RepositoryGroup) string {
 	}
 	sb.WriteString("\n")
 
-	sb.WriteString("Please analyze the codebase and implement the necessary fix. ")
-	sb.WriteString("Follow the existing code style and patterns. ")
-	sb.WriteString("Make minimal, targeted changes to address the issue. ")
-	sb.WriteString("You have access to all repositories in this group, so you can make cross-repository changes if needed.")
+	// Add mode-appropriate instructions
+	if task.GetMode() == model.TaskModeReport {
+		sb.WriteString("Complete the analysis and write the requested report. ")
+		sb.WriteString("Once you have written the report file, your task is complete.")
+	} else {
+		sb.WriteString("Please analyze the codebase and implement the necessary fix. ")
+		sb.WriteString("Follow the existing code style and patterns. ")
+		sb.WriteString("Make minimal, targeted changes to address the issue. ")
+		sb.WriteString("You have access to all repositories in this group, so you can make cross-repository changes if needed.")
+	}
 
 	// Append verifier instructions if verifiers are defined
 	verifiers := task.Execution.GetVerifiers()

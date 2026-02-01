@@ -68,8 +68,9 @@ func (p *Provider) Provision(ctx context.Context, opts sandbox.ProvisionOptions)
 		Image:     opts.Image,
 		Tty:       true,
 		OpenStdin: true,
-		Cmd:       []string{"sh", "-c", "touch /var/log/claude-code.log && tail -f /var/log/claude-code.log"},
-		Env:       envMapToSlice(opts.Env),
+		// Use /tmp for the log file since /var/log may not be writable by non-root users
+		Cmd: []string{"sh", "-c", "touch /tmp/claude-code.log && tail -f /tmp/claude-code.log"},
+		Env: envMapToSlice(opts.Env),
 	}
 
 	hostConfig := &container.HostConfig{
@@ -163,7 +164,7 @@ func (p *Provider) Exec(ctx context.Context, id string, cmd sandbox.ExecCommand)
 // writeToLog appends a message to the container's log file.
 func (p *Provider) writeToLog(ctx context.Context, id string, message string) error {
 	execConfig := types.ExecConfig{
-		Cmd:          []string{"sh", "-c", "cat >> /var/log/claude-code.log"},
+		Cmd:          []string{"sh", "-c", "cat >> /tmp/claude-code.log"},
 		AttachStdin:  true,
 		AttachStdout: false,
 		AttachStderr: false,

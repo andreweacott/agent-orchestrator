@@ -167,10 +167,10 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	effectiveRepos := task.GetEffectiveRepositories()
 	executionGroups := task.GetExecutionGroups()
 
-	// Branch based on number of groups for transform mode
-	// Note: Report mode always uses single-sandbox combined strategy
-	if task.GetMode() == model.TaskModeTransform && len(executionGroups) > 1 {
-		logger.Info("Using multi-group execution", "groups", len(executionGroups), "maxParallel", task.GetMaxParallel())
+	// Branch based on number of groups for parallel execution
+	// Both transform and report modes support grouped execution when multiple groups are defined
+	if len(executionGroups) > 1 {
+		logger.Info("Using multi-group execution", "groups", len(executionGroups), "maxParallel", task.GetMaxParallel(), "mode", task.GetMode())
 		return executeGroupedStrategy(ctx, task, startTime, signalDone), nil
 	}
 
@@ -197,12 +197,13 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	cloneCtx := workflow.WithActivityOptions(ctx, cloneOptions)
 
 	// Build clone input based on transformation vs legacy mode
+	// Use effectiveRepos to include repos from groups when applicable
 	cloneInput := activity.CloneRepositoriesInput{
 		SandboxInfo:    *sandbox,
 		AgentsMD:       agentsMD,
 		Transformation: task.Transformation,
 		Targets:        task.Targets,
-		Repositories:   task.Repositories,
+		Repositories:   effectiveRepos,
 	}
 
 	var clonedPaths []string

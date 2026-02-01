@@ -222,19 +222,19 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 
 	if hasTransformation {
 		// Transformation mode: targets are optional (transformation repo may be self-contained)
-		if hasRepositories {
-			// Warn: using both transformation and repositories is ambiguous
+		if hasRepositories || hasGroups {
+			// Warn: using both transformation and repositories/groups is ambiguous
 			// For now, we'll use transformation mode and ignore repositories
 			// A proper logger would be better, but we'll return an error for clarity
-			return nil, errors.New("cannot use both 'transformation' and 'repositories'; use 'transformation' with 'targets' or use 'repositories' alone")
+			return nil, errors.New("cannot use both 'transformation' and 'repositories'/'groups'; use 'transformation' with 'targets' or use 'repositories'/'groups' alone")
 		}
 	} else {
-		// Legacy mode: repositories required
+		// Standard mode: repositories or groups required
 		if hasTargets {
 			return nil, errors.New("'targets' requires 'transformation' to be set")
 		}
-		if !hasRepositories {
-			return nil, errors.New("at least one repository is required (use 'repositories' or 'transformation' with 'targets')")
+		if !hasRepositories && !hasGroups {
+			return nil, errors.New("at least one repository is required (use 'repositories', 'groups', or 'transformation' with 'targets')")
 		}
 	}
 
