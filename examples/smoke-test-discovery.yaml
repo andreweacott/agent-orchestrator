@@ -1,0 +1,92 @@
+# Smoke Test: Repository Discovery
+# This is a quick smoke test to verify the repository discovery approach works end-to-end.
+#
+# Prerequisites:
+#   - Export ANTHROPIC_API_KEY environment variable before starting the worker
+#   - Docker must be running (for sandbox containers)
+#
+# Usage:
+#   1. Set API key:        export ANTHROPIC_API_KEY=sk-ant-...
+#   2. Start Temporal:     make temporal-dev          (Terminal 1)
+#   3. Start worker:       make run-worker            (Terminal 2)
+#   4. Run smoke test:     ./bin/cli run -f examples/smoke-test-discovery.yaml
+#   5. Wait for completion (approx 30-60 seconds for Claude Code execution)
+#   6. Check result:       ./bin/cli result --workflow-id transform-smoke-test-discovery
+#   7. View reports:       ./bin/cli reports transform-smoke-test-discovery
+#      Full JSON output:   ./bin/cli reports transform-smoke-test-discovery -o json
+#      Save to file:       ./bin/cli reports transform-smoke-test-discovery -o json > report.json
+#
+# Notes:
+#   - The workflow ID is automatically prefixed with "transform-"
+#   - Use `result` command for completed workflows (not `status`)
+#   - The `status` command only works for running workflows
+#   - View workflow in UI: http://localhost:8233/namespaces/default/workflows/transform-smoke-test-discovery
+#
+# This test uses a small, stable public repository (cespare/xxhash) and should complete in ~1-2 minutes.
+
+version: 1
+id: smoke-test-discovery
+title: "Smoke Test: Codebase Discovery"
+description: "Quick verification that repository discovery works end-to-end"
+mode: report
+
+repositories:
+  # Using a small, stable Go repo for quick testing
+  - url: https://github.com/cespare/xxhash.git
+    branch: main
+
+execution:
+  agentic:
+    prompt: |
+      Analyze this Go repository and produce a discovery report.
+
+      Your task:
+      1. Identify the main purpose of this library
+      2. Count the number of Go files
+      3. Check if tests exist
+      4. Note the Go version requirements (if any)
+
+      Write your findings to /workspace/xxhash/REPORT.md with YAML frontmatter containing:
+      - library_name: string
+      - purpose: brief description (1 sentence)
+      - go_files_count: integer
+      - has_tests: boolean
+      - go_version: string or "unspecified"
+
+      Example format:
+      ---
+      library_name: "example"
+      purpose: "A library for doing X"
+      go_files_count: 5
+      has_tests: true
+      go_version: "1.18"
+      ---
+
+      # Discovery Report
+
+      ## Overview
+      ...
+
+    output:
+      schema:
+        type: object
+        required:
+          - library_name
+          - purpose
+          - go_files_count
+          - has_tests
+        properties:
+          library_name:
+            type: string
+          purpose:
+            type: string
+          go_files_count:
+            type: integer
+            minimum: 1
+          has_tests:
+            type: boolean
+          go_version:
+            type: string
+
+timeout: 5m
+require_approval: false

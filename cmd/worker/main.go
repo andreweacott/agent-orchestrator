@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	temporalactivity "go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
@@ -62,18 +63,18 @@ func main() {
 	// Register workflow
 	w.RegisterWorkflow(workflow.Transform)
 
-	// Register activities
-	w.RegisterActivity(sandboxActivities.ProvisionSandbox)
-	w.RegisterActivity(sandboxActivities.CloneRepositories)
-	w.RegisterActivity(sandboxActivities.CleanupSandbox)
-	w.RegisterActivity(sandboxActivities.RunVerifiers)
-	w.RegisterActivity(claudeActivities.RunClaudeCode)
-	w.RegisterActivity(claudeActivities.GetClaudeOutput)
-	w.RegisterActivity(deterministicActivities.ExecuteDeterministic)
-	w.RegisterActivity(githubActivities.CreatePullRequest)
-	w.RegisterActivity(slackActivities.NotifySlack)
-	w.RegisterActivity(reportActivities.CollectReport)
-	w.RegisterActivity(reportActivities.ValidateSchema)
+	// Register activities with explicit names to match workflow constants
+	w.RegisterActivityWithOptions(sandboxActivities.ProvisionSandbox, temporalactivity.RegisterOptions{Name: activity.ActivityProvisionSandbox})
+	w.RegisterActivityWithOptions(sandboxActivities.CloneRepositories, temporalactivity.RegisterOptions{Name: activity.ActivityCloneRepositories})
+	w.RegisterActivityWithOptions(sandboxActivities.CleanupSandbox, temporalactivity.RegisterOptions{Name: activity.ActivityCleanupSandbox})
+	w.RegisterActivityWithOptions(sandboxActivities.RunVerifiers, temporalactivity.RegisterOptions{Name: activity.ActivityRunVerifiers})
+	w.RegisterActivityWithOptions(claudeActivities.RunClaudeCode, temporalactivity.RegisterOptions{Name: activity.ActivityRunClaudeCode})
+	w.RegisterActivityWithOptions(claudeActivities.GetClaudeOutput, temporalactivity.RegisterOptions{Name: activity.ActivityGetClaudeOutput})
+	w.RegisterActivityWithOptions(deterministicActivities.ExecuteDeterministic, temporalactivity.RegisterOptions{Name: activity.ActivityExecuteDeterministic})
+	w.RegisterActivityWithOptions(githubActivities.CreatePullRequest, temporalactivity.RegisterOptions{Name: activity.ActivityCreatePullRequest})
+	w.RegisterActivityWithOptions(slackActivities.NotifySlack, temporalactivity.RegisterOptions{Name: activity.ActivityNotifySlack})
+	w.RegisterActivityWithOptions(reportActivities.CollectReport, temporalactivity.RegisterOptions{Name: activity.ActivityCollectReport})
+	w.RegisterActivityWithOptions(reportActivities.ValidateSchema, temporalactivity.RegisterOptions{Name: activity.ActivityValidateSchema})
 
 	log.Println("Worker started. Press Ctrl+C to stop.")
 
