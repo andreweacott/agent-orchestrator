@@ -160,6 +160,13 @@ type ForEachTarget struct {
 	Context string `json:"context" yaml:"context"`
 }
 
+// ForEachExecution represents the result of a single forEach target execution.
+type ForEachExecution struct {
+	Target ForEachTarget `json:"target"`
+	Report *ReportOutput `json:"report,omitempty"`
+	Error  *string       `json:"error,omitempty"`
+}
+
 // SandboxConfig contains Kubernetes sandbox settings for production.
 type SandboxConfig struct {
 	Namespace    string            `json:"namespace,omitempty" yaml:"namespace,omitempty"`
@@ -330,12 +337,13 @@ type ReportOutput struct {
 
 // RepositoryResult represents the result for a single repository.
 type RepositoryResult struct {
-	Repository    string         `json:"repository"`
-	Status        string         `json:"status"` // "success" | "failed" | "skipped"
-	FilesModified []string       `json:"files_modified,omitempty"`
-	PullRequest   *PullRequest   `json:"pull_request,omitempty"` // Transform mode
-	Report        *ReportOutput  `json:"report,omitempty"`       // Report mode
-	Error         *string        `json:"error,omitempty"`
+	Repository     string             `json:"repository"`
+	Status         string             `json:"status"` // "success" | "failed" | "skipped"
+	FilesModified  []string           `json:"files_modified,omitempty"`
+	PullRequest    *PullRequest       `json:"pull_request,omitempty"`    // Transform mode
+	Report         *ReportOutput      `json:"report,omitempty"`          // Report mode
+	ForEachResults []ForEachExecution `json:"for_each_results,omitempty"` // Report mode with forEach
+	Error          *string            `json:"error,omitempty"`
 }
 
 // TaskResult is the final result of the Transform workflow.

@@ -28,6 +28,10 @@ const (
 
 	// Slack activities
 	ActivityNotifySlack = "NotifySlack"
+
+	// Report activities
+	ActivityCollectReport  = "CollectReport"
+	ActivityValidateSchema = "ValidateSchema"
 )
 
 // Default configuration values (SIMP-004)
