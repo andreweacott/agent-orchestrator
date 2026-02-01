@@ -2,10 +2,13 @@
 
 Incremental implementation phases for the code transformation platform.
 
-> **Last Updated**: 2026-01-31 (Phase 3 Complete)
+> **Last Updated**: 2026-02-01 (Design Review - Phases Revised)
 >
 > **Note**: Implementation uses `TransformTask`/`Transform` workflow naming, aligned with the
 > generic transformation model in the design document.
+>
+> **Vision**: Managed Turbolift with two execution backends (Docker images for deterministic
+> transforms, Claude Code for agentic transforms). See DESIGN.md for full architecture.
 
 ---
 
@@ -182,115 +185,326 @@ verifiers:
 
 ---
 
-## Phase 4: Configuration & Profiles
+## Phase 4: CodeTransform CRD & Controller
 
-**Goal**: Externalize configuration, support sandbox profiles.
+**Goal**: Kubernetes-native interface for defining transformations.
 
-### 4.1 Configuration Loading
+> **Design Rationale**: The CRD provides a declarative, GitOps-friendly interface. Users can
+> `kubectl apply -f transform.yaml` and the controller handles the rest. This aligns with
+> the "managed Turbolift" vision—transformations are resources, not CLI invocations.
 
-- [ ] Load config from YAML file
-- [ ] Environment variable overrides
-- [ ] Config struct with defaults
+### 4.1 CRD Definition
 
-### 4.2 Sandbox Profiles
+- [ ] Define `CodeTransform` CRD schema (OpenAPI v3)
+- [ ] `spec.mode` - execution mode: `transform` (default) or `report`
+- [ ] `spec.repositories[]` - target repos with branch and setup commands
+- [ ] `spec.forEach[]` - iterate over multiple targets within a repo (for report mode)
+- [ ] `spec.transform.image` - deterministic transform (Docker image + args)
+- [ ] `spec.transform.agent` - agentic transform (prompt + verifiers)
+- [ ] `spec.transform.agent.outputSchema` - JSON schema for report mode output validation
+- [ ] `spec.resources` - CPU/memory limits for sandbox
+- [ ] `spec.timeout`, `spec.requireApproval` - execution settings
+- [ ] `spec.pullRequest` - PR title, branch prefix, labels (transform mode only)
+- [ ] `status` subresource - phase, workflowID, repository results, PR URLs or reports
 
-- [ ] Define `SandboxProfile` struct
-- [ ] Load profiles from config
-- [ ] Select profile per task or use default
-- [ ] Profile specifies: image, resources, timeout
+### 4.2 Controller Implementation
 
-### 4.3 Default Verifiers
+- [ ] Scaffold controller using controller-runtime (kubebuilder)
+- [ ] Watch `CodeTransform` resources
+- [ ] On create: start Temporal workflow, record workflowID in status
+- [ ] On update: handle cancellation signals
+- [ ] On delete: cancel workflow, cleanup
+- [ ] Periodic reconcile: sync status from Temporal to CRD
 
-- [ ] Allow profiles to define default verifiers
-- [ ] Task verifiers override/extend profile defaults
+### 4.3 Temporal Integration
+
+- [ ] `CodeTransformReconciler` creates workflows via Temporal client
+- [ ] Query workflow status and map to CRD status phases
+- [ ] Handle Temporal workflow completion/failure events
+
+### 4.4 CLI Integration
+
+- [ ] `orchestrator run --file transform.yaml` creates CRD (if in-cluster)
+- [ ] `orchestrator run --file transform.yaml --local` bypasses CRD (direct Temporal)
+- [ ] `orchestrator get <name>` shows CRD status
+- [ ] Support both in-cluster and out-of-cluster operation
 
 ### Deliverable
 
 ```yaml
-# config.yaml
-profiles:
-  go:
-    image: claude-sandbox-go:1.22
-    resources:
-      memoryMB: 4096
-    defaultVerifiers:
-      - name: build
-        command: ["go", "build", "./..."]
-      - name: test
-        command: ["go", "test", "./..."]
+apiVersion: codetransform.io/v1alpha1
+kind: CodeTransform
+metadata:
+  name: upgrade-logging
+spec:
+  repositories:
+    - url: https://github.com/org/service-a.git
+    - url: https://github.com/org/service-b.git
+  transform:
+    agent:
+      prompt: |
+        Migrate from log.Printf to slog package.
+      verifiers:
+        - name: build
+          command: ["go", "build", "./..."]
+        - name: test
+          command: ["go", "test", "./..."]
+  resources:
+    limits:
+      memory: "4Gi"
+      cpu: "2"
+  timeout: 30m
+  requireApproval: true
+  pullRequest:
+    branchPrefix: "auto/slog-migration"
+    title: "Migrate to structured logging"
 ```
+
+```bash
+# Apply transformation
+kubectl apply -f upgrade-logging.yaml
+
+# Check status
+kubectl get codetransform upgrade-logging -o yaml
+
+# Or via CLI
+orchestrator get upgrade-logging
+```
+
+### 4.5 Configuration (Moved from original Phase 4)
+
+- [ ] Load operator config from ConfigMap or file
+- [ ] Default sandbox image, resources, namespace
+- [ ] Temporal connection settings
+- [ ] GitHub/Slack credentials references
 
 ---
 
-## Phase 5: Kubernetes Provider
+## Phase 5: Kubernetes Jobs Sandbox Provider
 
-**Goal**: Run sandboxes on Kubernetes for production.
+**Goal**: Run sandboxes on Kubernetes using Jobs for production workloads.
+
+> **Design Rationale**: Plain Kubernetes Jobs are simpler than custom CRDs or Agent Sandbox,
+> and sufficient for ephemeral transformation workloads. The Temporal worker creates Jobs,
+> execs into them, and deletes them when done.
 
 ### 5.1 Kubernetes Sandbox Provider
 
-- [ ] Implement `Provider` interface for K8s
-- [ ] `Provision()` - create Pod
-- [ ] `Exec()` - kubectl exec via API
-- [ ] `Cleanup()` - delete Pod
-- [ ] Wait for pod ready with timeout
+- [ ] Implement `Provider` interface for K8s using client-go
+- [ ] `Provision()` - create Job with pod template
+- [ ] `WaitReady()` - wait for pod Running state
+- [ ] `Exec()` - exec into pod via K8s API (like kubectl exec)
+- [ ] `Cleanup()` - delete Job (or rely on TTL)
 
-### 5.2 Provider Selection
+### 5.2 Job Specification
 
-- [ ] Factory function based on config/env
-- [ ] Auto-detect environment (Docker socket vs K8s service account)
+- [ ] Generate Job spec from `CodeTransform` resource settings
+- [ ] Configure resources (CPU, memory) from spec
+- [ ] Set `runtimeClassName` for gVisor if specified
+- [ ] Apply node selectors and tolerations
+- [ ] Mount secrets for GitHub token, API keys
+- [ ] Set `ttlSecondsAfterFinished` for automatic cleanup
 
-### 5.3 K8s-Specific Options
+### 5.3 Provider Selection
 
-- [ ] Namespace configuration
-- [ ] Node selectors
-- [ ] Resource limits from profile
-- [ ] Service account for sandbox pods
+- [ ] Factory function based on `SANDBOX_PROVIDER` env var
+- [ ] Auto-detect: Docker socket → Docker, ServiceAccount → Kubernetes
+- [ ] Fallback chain: Kubernetes → Docker → error
 
-### 5.4 Local K8s Testing
+### 5.4 Namespace and Multi-tenancy
 
-- [ ] kind/minikube setup instructions
-- [ ] Integration tests with real cluster
+- [ ] Configurable sandbox namespace (default: `sandbox-isolated`)
+- [ ] Support namespace-per-team for isolation
+- [ ] ResourceQuota enforcement per namespace
+
+### 5.5 Local K8s Testing
+
+- [ ] kind cluster setup script
+- [ ] Integration tests against real cluster
+- [ ] CI pipeline with kind
 
 ### Deliverable
 
 ```yaml
-# config.yaml
+# Operator config
 sandbox:
   provider: kubernetes
-  namespace: orchestrator-sandboxes
+  namespace: sandbox-isolated
+  image: your-org/claude-sandbox:latest
+  serviceAccount: sandbox-runner
   nodeSelector:
     workload-type: sandbox
+  runtimeClassName: gvisor  # optional
+  resources:
+    defaultLimits:
+      memory: "4Gi"
+      cpu: "2"
+```
+
+```bash
+# Worker creates this Job:
+kubectl get jobs -n sandbox-isolated
+NAME                      COMPLETIONS   DURATION   AGE
+transform-task-abc123     0/1           2m         2m
+
+# And execs into the running pod
+kubectl exec -n sandbox-isolated transform-task-abc123-xyz -- git clone ...
 ```
 
 ---
 
-## Phase 6: Agent Sandbox Integration
+## Phase 6: Observability
 
-**Goal**: Use kubernetes-sigs/agent-sandbox for production isolation.
+**Goal**: Metrics, logging, and dashboards for operational visibility.
 
-### 6.1 Agent Sandbox Provider
+> **Design Rationale**: Observability comes before security hardening because you need
+> visibility to tune and debug the system. Without metrics, you're flying blind.
 
-- [ ] Implement provider using SandboxClaim CRD
-- [ ] Reference SandboxTemplate by name
-- [ ] Use SandboxWarmPool for fast start
+### 6.1 Prometheus Metrics
 
-### 6.2 Sandbox Templates
+- [ ] Instrument controller and worker with prometheus client
+- [ ] `codetransform_tasks_total` (counter) - by status, transform_type
+- [ ] `codetransform_task_duration_seconds` (histogram) - end-to-end duration
+- [ ] `codetransform_sandbox_provision_seconds` (histogram) - sandbox startup time
+- [ ] `codetransform_verifier_duration_seconds` (histogram) - by verifier name
+- [ ] `codetransform_pr_created_total` (counter) - successful PRs
+- [ ] `codetransform_api_tokens_used` (counter) - Claude API token consumption
 
-- [ ] Define SandboxTemplate CRDs for each profile
-- [ ] gVisor runtime class configuration
-- [ ] Resource limits and timeouts
+### 6.2 Structured Logging
 
-### 6.3 Warm Pools
+- [ ] Use slog or zap for structured JSON logs
+- [ ] Include task_id, workflow_id, repository in all log entries
+- [ ] Log lifecycle events: task started, sandbox provisioned, transform complete, PR created
+- [ ] Separate log streams for controller vs worker vs sandbox
 
-- [ ] Configure SandboxWarmPool CRD
-- [ ] Monitor pool utilization
-- [ ] Tune pool size based on demand
+### 6.3 Grafana Dashboard
+
+- [ ] Task throughput and success rate
+- [ ] Duration percentiles (p50, p95, p99)
+- [ ] Active tasks and queue depth
+- [ ] Sandbox provisioning latency
+- [ ] Error rate by error type
+
+### 6.4 Alerting Rules
+
+- [ ] High task failure rate (>10% over 1h)
+- [ ] Task stuck in Running >2x timeout
+- [ ] Sandbox provisioning failures
+- [ ] Worker pod restarts
 
 ### Deliverable
 
 ```yaml
-# SandboxTemplate
-apiVersion: sandbox.k8s.io/v1
+# ServiceMonitor for Prometheus Operator
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: codetransform-controller
+spec:
+  selector:
+    matchLabels:
+      app: codetransform-controller
+  endpoints:
+  - port: metrics
+    interval: 30s
+```
+
+---
+
+## Phase 7: Security Hardening
+
+**Goal**: Production-grade security, RBAC, and operational resilience.
+
+### 7.1 Network Policies
+
+- [ ] Sandbox egress policy: allow HTTPS to GitHub, package registries, AI APIs
+- [ ] Deny all ingress to sandbox pods
+- [ ] Worker-to-sandbox communication via K8s exec API only
+- [ ] Document required egress destinations for common ecosystems (npm, PyPI, Maven)
+
+### 7.2 RBAC
+
+- [ ] Controller ServiceAccount: create/delete Jobs, update CRD status
+- [ ] Worker ServiceAccount: create Jobs, exec into pods, read secrets
+- [ ] Sandbox ServiceAccount: no K8s API access (empty RBAC)
+- [ ] Namespace-scoped roles for multi-tenant deployments
+
+### 7.3 Secret Management
+
+- [ ] IRSA for AWS credentials (ECR pull, Secrets Manager)
+- [ ] External Secrets Operator integration for GitHub tokens, API keys
+- [ ] Secret rotation without pod restart
+- [ ] Audit which tasks accessed which secrets
+
+### 7.4 Audit Logging
+
+- [ ] Enable K8s audit logging for sandbox namespace
+- [ ] Log all exec operations with task context
+- [ ] Integration with SIEM (CloudWatch, Splunk, etc.)
+
+### 7.5 Scaling & Reliability
+
+- [ ] HPA for workers based on Temporal task queue depth
+- [ ] Cluster Autoscaler configuration for sandbox node pool
+- [ ] Spot instance node group with fallback to on-demand
+- [ ] Pod Disruption Budgets for controller and workers
+- [ ] Graceful shutdown: drain active tasks before termination
+
+### 7.6 Deployment Artifacts
+
+- [ ] Helm chart with configurable values
+- [ ] Terraform module for EKS cluster setup
+- [ ] Kustomize overlays for dev/staging/prod
+- [ ] Runbook: common failure modes and remediation
+
+### Deliverable
+
+```bash
+# Deploy with Helm
+helm install codetransform ./charts/codetransform \
+  --namespace codetransform-system \
+  --set temporal.address=temporal.internal:7233 \
+  --set sandbox.namespace=sandbox-isolated \
+  --set sandbox.runtimeClassName=gvisor
+```
+
+---
+
+## Phase 8: Agent Sandbox Integration (Optional)
+
+**Goal**: Use kubernetes-sigs/agent-sandbox for warm pools and faster provisioning.
+
+> **Design Rationale**: This phase is OPTIONAL. Plain Kubernetes Jobs (Phase 5) are sufficient
+> for most workloads. Only implement this if you need sub-second sandbox provisioning or
+> want to leverage the Agent Sandbox ecosystem.
+
+### 8.1 Agent Sandbox Provider
+
+- [ ] Implement provider using SandboxClaim CRD
+- [ ] Reference SandboxTemplate by name from CodeTransform spec
+- [ ] Acquire sandbox from SandboxWarmPool instead of creating Job
+
+### 8.2 Sandbox Templates
+
+- [ ] Define SandboxTemplate CRDs for common stacks (Go, Node, Python, Java)
+- [ ] Configure gVisor runtime class
+- [ ] Set resource limits matching CodeTransform defaults
+
+### 8.3 Warm Pools
+
+- [ ] Configure SandboxWarmPool CRD with min/max sizes
+- [ ] Metrics for pool utilization and wait time
+- [ ] Auto-tune pool size based on demand patterns
+
+### 8.4 Fallback to Jobs
+
+- [ ] If warm pool exhausted, fall back to creating a Job
+- [ ] Configurable: prefer warm pool vs always use Jobs
+
+### Deliverable
+
+```yaml
+apiVersion: agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
   name: go-standard
@@ -303,66 +517,39 @@ spec:
         limits:
           memory: 4Gi
           cpu: "2"
+---
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: SandboxWarmPool
+metadata:
+  name: go-warm-pool
+spec:
+  templateRef:
+    name: go-standard
+  minSize: 2
+  maxSize: 10
 ```
 
 ---
 
-## Phase 7: Production Hardening
-
-**Goal**: Security, observability, and operational readiness.
-
-### 7.1 Security
-
-- [ ] Network policies for sandbox pods
-- [ ] RBAC for workers and sandboxes
-- [ ] Secret management (IRSA, external-secrets)
-- [ ] Audit logging
-
-### 7.2 Observability
-
-- [ ] Prometheus metrics
-  - [ ] Task duration
-  - [ ] Success/failure rates
-  - [ ] Sandbox provisioning time
-- [ ] Structured logging
-- [ ] Grafana dashboard
-
-### 7.3 Scaling
-
-- [ ] HPA for workers based on queue depth
-- [ ] Cluster autoscaler for sandbox nodes
-- [ ] Spot instance configuration
-
-### 7.4 Reliability
-
-- [ ] Pod disruption budgets
-- [ ] Graceful shutdown handling
-- [ ] Retry policies tuning
-
-### Deliverable
-
-Production-ready deployment with:
-- Helm chart
-- Terraform for EKS
-- Runbook documentation
-
----
-
-## Phase 8: Advanced Features
+## Phase 9: Advanced Features
 
 **Goal**: Enhanced capabilities based on usage patterns.
 
-### 8.1 Human-in-the-Loop (Basic)
+### 9.1 Human-in-the-Loop (Basic) - COMPLETE
 
 - [x] Temporal signals for approval *(approve/reject/cancel signals implemented)*
 - [x] Slack integration for notifications *(NotifySlack activity)*
 - [x] Approval timeout handling *(24-hour timeout with AwaitWithTimeout)*
 
-### 8.2 Human-in-the-Loop (Iterative Steering)
+### 9.2 Human-in-the-Loop (Iterative Steering)
 
 **Goal**: Enable rich, iterative human-agent collaboration instead of binary approve/reject.
 
-#### 8.2.1 View Changes
+> **This is the key differentiator.** Basic HITL (approve/reject) is table stakes. Iterative
+> steering—where humans can guide the agent through multiple rounds—is what makes an agentic
+> platform valuable. Prioritize this over Agent Sandbox integration.
+
+#### 9.2.1 View Changes
 
 - [ ] `GetDiff` activity - return full git diffs for all modified files
 - [ ] `GetVerifierOutput` activity - return detailed test/build output
@@ -370,7 +557,7 @@ Production-ready deployment with:
 - [ ] CLI: `orchestrator logs --workflow-id <id>` - view verifier output
 - [ ] Slack: Include diff snippets or link to full diff viewer
 
-#### 8.2.2 Steering Prompts
+#### 9.2.2 Steering Prompts
 
 - [ ] Add `steer` signal with prompt payload to workflow
 - [ ] Workflow loops back to Claude Code with steering prompt
@@ -378,13 +565,13 @@ Production-ready deployment with:
 - [ ] CLI: `orchestrator steer --workflow-id <id> --prompt "try X instead"`
 - [ ] Track iteration count and history
 
-#### 8.2.3 Partial Approval
+#### 9.2.3 Partial Approval
 
 - [ ] Allow approving specific files while requesting changes to others
 - [ ] `orchestrator approve --workflow-id <id> --files "src/main.go,src/util.go"`
 - [ ] `orchestrator steer --workflow-id <id> --files "src/test.go" --prompt "add edge case tests"`
 
-#### 8.2.4 Interactive Review UI
+#### 9.2.4 Interactive Review UI
 
 - [ ] Web UI for reviewing diffs (syntax highlighted)
 - [ ] Side-by-side diff view
@@ -392,7 +579,7 @@ Production-ready deployment with:
 - [ ] One-click approve/reject/steer buttons
 - [ ] View agent's reasoning and conversation history
 
-#### Interaction Flow
+#### 9.2.5 Interaction Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -423,23 +610,118 @@ Production-ready deployment with:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.3 Scheduled Tasks
+### 9.3 Scheduled Tasks
 
 - [ ] Temporal schedules for recurring tasks
 - [ ] Cron-like syntax support
+- [ ] Example: weekly dependency update transforms
 
-### 8.4 Cost Tracking
+### 9.4 Cost Tracking
 
-- [ ] Track API token usage per task
-- [ ] Compute cost attribution
-- [ ] Budget alerts
+- [ ] Track API token usage per task (Claude API)
+- [ ] Compute cost attribution (sandbox CPU/memory hours)
+- [ ] Per-team/namespace cost rollup
+- [ ] Budget alerts and quotas
 
-### 8.5 Web UI (Optional)
+### 9.5 Web UI (Optional)
 
 - [ ] Task submission form
 - [ ] Status dashboard
 - [ ] Result viewing
-- [ ] Diff viewer (integrates with 8.2.4)
+- [ ] Diff viewer (integrates with 9.2.4)
+
+### 9.6 Report Mode (Discovery)
+
+**Goal**: Support distributed code analysis and discovery across many repositories without creating PRs.
+
+> **Use Case**: Before running a migration campaign, discover which repositories are affected and
+> collect structured data to inform the transformation strategy. Also useful for security audits,
+> dependency inventories, and compliance assessments.
+
+#### 9.6.1 Core Report Mode
+
+- [ ] Add `mode` field to CRD: `transform` (default) or `report`
+- [ ] Skip PR creation workflow when `mode: report`
+- [ ] Capture agent stdout as structured output
+- [ ] Validate output against `outputSchema` if provided
+- [ ] Store report in CRD status (for small reports)
+
+#### 9.6.2 Output Schema Validation
+
+- [ ] Parse `spec.transform.agent.outputSchema` (JSON Schema)
+- [ ] Validate agent output against schema
+- [ ] Report validation errors in status
+- [ ] Support common types: object, array, string, number, boolean, enum
+
+#### 9.6.3 forEach: Multi-Target Discovery
+
+- [ ] Add `spec.forEach[]` field for iterating within a repo
+- [ ] Each target gets its own sandbox execution
+- [ ] Template variable substitution in prompt: `{{.context}}`, `{{.name}}`
+- [ ] Aggregate reports by target in status
+
+#### 9.6.4 Report Storage
+
+- [ ] Inline in CRD status (default, for small reports)
+- [ ] ConfigMap storage for medium reports
+- [ ] S3/GCS backend for large-scale discovery (100+ repos)
+- [ ] Operator config: `reportStorage.backend`
+
+#### 9.6.5 CLI Support
+
+- [ ] `orchestrator run --mode report --prompt "..."` - run discovery
+- [ ] `orchestrator reports <name>` - view collected reports
+- [ ] `orchestrator reports <name> --output json` - export reports
+- [ ] `orchestrator reports <name> --aggregate` - show summary statistics
+
+#### 9.6.6 Campaign Integration
+
+- [ ] Discovery Campaign type (mode: report across many repos)
+- [ ] Report aggregation at Campaign level
+- [ ] Two-phase workflow: discover → review → transform
+- [ ] Pass discovery output to transform phase
+
+### Deliverable (Report Mode)
+
+```yaml
+# Discovery task
+apiVersion: codetransform.io/v1alpha1
+kind: CodeTransform
+metadata:
+  name: auth-audit
+spec:
+  mode: report
+  repositories:
+    - url: https://github.com/org/service-a.git
+    - url: https://github.com/org/service-b.git
+  transform:
+    agent:
+      prompt: |
+        Analyze authentication patterns. Output JSON with:
+        - auth_library: string
+        - has_mfa: boolean
+        - issues: array of {severity, description}
+      outputSchema:
+        type: object
+        properties:
+          auth_library: { type: string }
+          has_mfa: { type: boolean }
+          issues: { type: array }
+  timeout: 15m
+```
+
+```bash
+# Run discovery
+orchestrator run --file auth-audit.yaml
+
+# View reports
+orchestrator reports auth-audit
+# service-a: {"auth_library": "oauth2", "has_mfa": true, "issues": []}
+# service-b: {"auth_library": "custom", "has_mfa": false, "issues": [...]}
+
+# Export for further analysis
+orchestrator reports auth-audit --output json > audit-results.json
+```
 
 ---
 
@@ -450,16 +732,37 @@ Production-ready deployment with:
 | 1 | Local MVP | Single-repo agentic task with Docker | ✅ Complete |
 | 2 | PR Creation | Multi-repo with GitHub PRs | ✅ Complete |
 | 3 | Deterministic | Docker-based transformations | ✅ Complete |
-| 4 | Configuration | Profiles and external config | ⬜ Not started |
-| 5 | Kubernetes | K8s sandbox provider | ⬜ Not started |
-| 6 | Agent Sandbox | Production isolation with warm pools | ⬜ Not started |
-| 7 | Production | Security, observability, scaling | ⬜ Not started |
-| 8 | Advanced | HITL (basic + iterative), scheduling, cost tracking | 🟡 ~20% (basic HITL only) |
+| 4 | **CRD & Controller** | `CodeTransform` CRD, K8s-native interface | ⬜ Not started |
+| 5 | **Kubernetes Jobs** | K8s sandbox provider using Jobs | ⬜ Not started |
+| 6 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |
+| 7 | **Security** | RBAC, NetworkPolicy, secrets, scaling | ⬜ Not started |
+| 8 | Agent Sandbox | Warm pools (OPTIONAL) | ⬜ Not started |
+| 9 | Advanced | HITL steering, scheduling, cost tracking, **report mode** | 🟡 ~20% (basic HITL only) |
 
 Each phase builds on the previous and delivers working functionality.
 
 ### Recommended Next Steps
 
-1. **Phase 4** - Add configuration file and sandbox profiles
-2. **Phase 8.2** - Iterative HITL steering (high value for usability)
-3. **Phase 5** - Kubernetes sandbox provider for production
+**Parallel Track A (Infrastructure):**
+1. **Phase 4** - CodeTransform CRD and controller (K8s-native interface)
+2. **Phase 5** - Kubernetes Jobs sandbox provider
+3. **Phase 6** - Observability (needed to tune production)
+
+**Parallel Track B (Product Differentiation):**
+1. **Phase 9.2** - Iterative HITL steering (key differentiator - can start immediately)
+2. **Phase 9.6** - Report mode for distributed discovery (enables two-phase campaigns)
+
+> **Priority Note**: Iterative HITL steering (Phase 9.2) is the most valuable feature for
+> agentic mode usability. Report mode (Phase 9.6) enables discovery campaigns which are
+> valuable for pre-migration analysis and security audits. Both have no dependencies on
+> Phases 4-7 and can be developed in parallel using the existing Docker sandbox.
+
+### Key Changes from Original Plan
+
+| Original | Revised | Rationale |
+|----------|---------|-----------|
+| Phase 4: Config & Profiles | Phase 4: CRD & Controller | CRD is the primary interface; config folded in |
+| Phase 5: K8s Provider (abstract) | Phase 5: K8s Jobs (concrete) | Jobs are simpler and sufficient |
+| Phase 6: Agent Sandbox | Phase 8: Agent Sandbox (optional) | Defer unless warm pools needed |
+| Phase 7: Prod Hardening (mixed) | Phase 6: Observability, Phase 7: Security | Split for clarity; observability first |
+| Phase 8: Advanced | Phase 9: Advanced | Iterative steering emphasized as key differentiator |
