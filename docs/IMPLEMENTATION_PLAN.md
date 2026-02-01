@@ -217,6 +217,7 @@ orchestrator run \
 
 ```yaml
 # discovery-task.yaml
+version: 1
 id: auth-audit
 title: "Authentication security audit"
 mode: report
@@ -394,6 +395,7 @@ task-abc123               0/1           2m         2m
 
 ```yaml
 # campaign.yaml
+version: 1
 id: slog-migration-campaign
 title: "Migrate all Go services to slog"
 

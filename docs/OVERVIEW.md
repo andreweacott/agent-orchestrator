@@ -220,6 +220,7 @@ Transform 10 Go services from `log.Printf` to the `slog` package:
 
 ```yaml
 # task.yaml
+version: 1
 id: slog-migration
 title: "Migrate to structured logging (slog)"
 
@@ -282,6 +283,7 @@ Analyze authentication patterns across 50 repositories:
 
 ```yaml
 # auth-audit.yaml
+version: 1
 id: auth-security-audit
 title: "Authentication security audit"
 mode: report
@@ -369,6 +371,7 @@ Upgrade Log4j using OpenRewrite across all Java services:
 
 ```yaml
 # log4j-upgrade.yaml
+version: 1
 id: log4j-upgrade
 title: "Upgrade Log4j 1.x to 2.x"
 mode: deterministic
@@ -407,6 +410,7 @@ First discover which services use a deprecated API, then migrate them:
 **Phase 1: Discovery**
 ```yaml
 # discover-deprecated-api.yaml
+version: 1
 id: discover-v1-api-usage
 title: "Discover deprecated v1 API usage"
 mode: report
@@ -443,6 +447,7 @@ execution:
 **Phase 2: Transform (targeted)**
 ```yaml
 # migrate-to-v2-api.yaml
+version: 1
 id: migrate-v1-to-v2
 title: "Migrate from v1 to v2 API client"
 

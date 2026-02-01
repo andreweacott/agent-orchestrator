@@ -146,12 +146,62 @@ The K8s operator is an optional convenience layer. The CLI and Temporal API are 
 
 ## Data Model
 
+### Schema Versioning
+
+All Task and Campaign YAML files require a `version` field. This enables:
+
+- **Forward compatibility**: Older CLI versions reject unknown schema versions
+- **Migration tooling**: `orchestrator migrate --file task.yaml` upgrades schemas
+- **Clear deprecation**: Announce version sunset with migration period
+
+**Version Format**: Integer (e.g., `1`, `2`)
+
+| Version | Status | Notes |
+|---------|--------|-------|
+| `1` | Current | Initial stable schema |
+
+**Breaking Changes** (require version bump):
+- Removing or renaming required fields
+- Changing field types
+- Changing default behavior
+
+**Non-Breaking Changes** (same version):
+- Adding optional fields with defaults
+- Adding new enum values
+- Relaxing validation constraints
+
+**Loader Behavior**:
+
+```go
+func LoadTask(data []byte) (*Task, error) {
+    // 1. Parse version field first
+    var header struct {
+        Version *int `yaml:"version"`
+    }
+    if err := yaml.Unmarshal(data, &header); err != nil {
+        return nil, err
+    }
+
+    // 2. Validate version
+    if header.Version == nil {
+        return nil, errors.New("version field is required")
+    }
+    switch *header.Version {
+    case 1:
+        return loadTaskV1(data)
+    default:
+        return nil, fmt.Errorf("unsupported schema version: %d (supported: 1)", *header.Version)
+    }
+}
+```
+
 ### Task Schema (task.yaml)
 
 The primary interface for defining transformations:
 
 ```yaml
 # task.yaml - Complete schema
+version: 1                    # Schema version (required, integer)
 id: string                    # Unique identifier
 title: string                 # Human-readable title
 description: string           # Optional longer description
@@ -198,7 +248,10 @@ execution:
         command: [string]
 
 # Execution settings
-timeout: duration             # e.g., "30m"
+timeout: duration             # e.g., "30m" - Total wall-clock time for entire task
+                              # Includes: sandbox provisioning, clone, execution, verification
+                              # Does NOT include: approval wait time (separate timeout)
+                              # For multi-repo tasks: applies to entire task, not per-repo
 require_approval: boolean     # Default: true for agentic, false for deterministic
 
 # PR settings (transform mode only)
@@ -236,6 +289,7 @@ credentials:
 
 **Agentic Transform:**
 ```yaml
+version: 1
 id: slog-migration
 title: "Migrate to structured logging"
 mode: transform
@@ -271,6 +325,7 @@ pull_request:
 
 **Deterministic Transform:**
 ```yaml
+version: 1
 id: log4j-upgrade
 title: "Upgrade Log4j 1.x to 2.x"
 mode: transform
@@ -299,6 +354,7 @@ pull_request:
 
 **Report Mode:**
 ```yaml
+version: 1
 id: auth-audit
 title: "Authentication security audit"
 mode: report
@@ -388,6 +444,7 @@ JWT tokens in `pkg/auth/jwt.go` are issued without an expiration claim...
 
 **Report Mode with forEach:**
 ```yaml
+version: 1
 id: api-endpoint-audit
 title: "API endpoint assessment"
 mode: report
@@ -438,6 +495,7 @@ Orchestrates multiple Tasks across repositories:
 
 ```yaml
 # campaign.yaml - Complete schema
+version: 1                    # Schema version (required, integer)
 id: string                    # Unique identifier
 title: string                 # Human-readable title
 description: string           # Optional longer description
@@ -498,6 +556,7 @@ phases:
 
 **Transform Campaign:**
 ```yaml
+version: 1
 id: slog-migration-campaign
 title: "Migrate all Go services to slog"
 
@@ -534,6 +593,7 @@ failure:
 
 **Discovery Campaign:**
 ```yaml
+version: 1
 id: log4j-discovery
 title: "Discover Log4j usage across all Java services"
 
@@ -552,15 +612,16 @@ task_template:
         - How many files import Log4j?
         - Is Log4j in dependencies?
 
-      output_schema:
-        type: object
-        properties:
-          log4j_version:
-            type: string
-          file_count:
-            type: integer
-          in_dependencies:
-            type: boolean
+      output:
+        schema:
+          type: object
+          properties:
+            log4j_version:
+              type: string
+            file_count:
+              type: integer
+            in_dependencies:
+              type: boolean
   timeout: 10m
 
 batch:
@@ -570,6 +631,7 @@ batch:
 
 **Two-Phase Campaign:**
 ```yaml
+version: 1
 id: api-v2-migration
 title: "Discover and migrate deprecated v1 API"
 
@@ -580,13 +642,14 @@ phases:
       execution:
         agentic:
           prompt: "Find usage of deprecated v1 API client..."
-          output_schema:
-            type: object
-            properties:
-              uses_v1_api:
-                type: boolean
-              usage_locations:
-                type: array
+          output:
+            schema:
+              type: object
+              properties:
+                uses_v1_api:
+                  type: boolean
+                usage_locations:
+                  type: array
 
   - name: transform
     mode: transform
@@ -619,6 +682,7 @@ The schemas map to internal Go types used by Temporal workflows:
 ```go
 // Task is the input for the Task workflow
 type Task struct {
+    Version      int                `json:"version"`        // Schema version, e.g., 1
     ID           string             `json:"id"`
     Title        string             `json:"title"`
     Description  string             `json:"description,omitempty"`
@@ -1422,6 +1486,80 @@ if iterationsSinceLastChange > 3 {
     return StuckError("No progress after 3 iterations")
 }
 ```
+
+### Report Mode Failure Handling
+
+Report mode has unique failure scenarios since there's no PR creation or verifier loop:
+
+| Failure Mode | Detection | Response |
+|--------------|-----------|----------|
+| **Report file missing** | `/workspace/REPORT.md` doesn't exist | Fail task, include agent stdout as diagnostic |
+| **Frontmatter parse error** | YAML between `---` delimiters is invalid | Fail task, return raw content for debugging |
+| **Schema validation failed** | Frontmatter doesn't match `output.schema` | Fail task, return validation errors and raw content |
+| **Empty report** | File exists but is empty or trivial | Warning (not failure), flag for human review |
+| **Timeout** | Wall clock > `timeout` | Terminate sandbox, return partial output if available |
+
+**Recovery Flow:**
+
+```go
+func CollectReport(ctx context.Context, sandbox Sandbox, schema json.RawMessage) (*ReportOutput, error) {
+    // 1. Attempt to read report file
+    content, err := sandbox.CopyFrom(ctx, "/workspace/REPORT.md")
+    if err != nil {
+        // File missing - capture agent stdout as fallback diagnostic
+        return &ReportOutput{
+            Raw:   "",
+            Error: fmt.Sprintf("Report file not found: %v", err),
+        }, ErrReportMissing
+    }
+
+    // 2. Parse frontmatter
+    report, err := ParseFrontmatter(content)
+    if err != nil {
+        // Return raw content so human can see what agent produced
+        return &ReportOutput{
+            Raw:   content,
+            Error: fmt.Sprintf("Frontmatter parse error: %v", err),
+        }, ErrFrontmatterInvalid
+    }
+
+    // 3. Validate against schema (if provided)
+    if schema != nil {
+        if validationErrs := ValidateJSON(report.Frontmatter, schema); len(validationErrs) > 0 {
+            report.ValidationErrors = validationErrs
+            return report, ErrSchemaValidation
+        }
+    }
+
+    return report, nil
+}
+```
+
+**Error Types:**
+
+```go
+var (
+    ErrReportMissing      = errors.New("report file not found")
+    ErrFrontmatterInvalid = errors.New("frontmatter parse failed")
+    ErrSchemaValidation   = errors.New("frontmatter schema validation failed")
+)
+
+// ReportOutput extended for error cases
+type ReportOutput struct {
+    Frontmatter      map[string]any `json:"frontmatter,omitempty"`
+    Body             string         `json:"body,omitempty"`
+    Raw              string         `json:"raw"`
+    Error            string         `json:"error,omitempty"`
+    ValidationErrors []string       `json:"validation_errors,omitempty"`
+}
+```
+
+**Campaign Behavior:**
+
+When a report-mode task fails within a Campaign:
+- The failure counts toward the Campaign's failure threshold
+- The raw output (if any) is preserved in the result for debugging
+- Human can decide to: skip the repository, retry with steering prompt, or abort
 
 ---
 
