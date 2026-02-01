@@ -1,0 +1,152 @@
+# Multi-Repository Grouped Migration Example
+#
+# This example demonstrates organizing repositories into groups.
+# It showcases:
+# - Multiple repository groups with independent sandboxes
+# - Cross-repository context within each group
+# - Parallel processing across groups (with concurrency limits)
+# - Useful when related services need to see each other, but unrelated services should be separate
+#
+# Scenario: Migrating authentication across a microservices platform.
+# Backend services need to see each other's auth logic, but frontend apps are independent.
+
+version: 1
+id: auth-migration-grouped
+title: "Migrate to centralized authentication service"
+description: "Update backend services to use the new auth service, and frontend apps to use the new auth endpoints"
+mode: transform
+
+# Process up to 3 groups concurrently
+max_parallel: 3
+
+# Define groups of related repositories
+# Each group shares one sandbox, groups are processed in parallel
+groups:
+  # Group 1: Backend services that need to coordinate auth changes
+  - name: backend-services
+    repositories:
+      - url: https://github.com/yourorg/user-service.git
+        branch: main
+        setup:
+          - go mod download
+
+      - url: https://github.com/yourorg/order-service.git
+        branch: main
+        setup:
+          - go mod download
+
+      - url: https://github.com/yourorg/payment-service.git
+        branch: main
+        setup:
+          - go mod download
+
+  # Group 2: API Gateway (needs to see changes from both backend and frontend perspective)
+  - name: api-gateway
+    repositories:
+      - url: https://github.com/yourorg/api-gateway.git
+        branch: main
+        setup:
+          - go mod download
+
+  # Group 3: Frontend applications (independent from backend details)
+  - name: frontend-apps
+    repositories:
+      - url: https://github.com/yourorg/web-app.git
+        branch: main
+        setup:
+          - npm install
+
+      - url: https://github.com/yourorg/mobile-app.git
+        branch: main
+        setup:
+          - npm install
+
+execution:
+  agentic:
+    prompt: |
+      Migrate this service to use the new centralized authentication service.
+
+      ## Context
+      We're moving from per-service JWT validation to a centralized auth service.
+
+      ## For Backend Services (if in backend-services group):
+      1. Remove local JWT validation middleware
+      2. Add auth-service client library: `go get github.com/yourorg/auth-client@latest`
+      3. Update middleware to call auth-service for token validation
+      4. Update configuration to point to auth-service endpoint
+      5. Ensure consistent error handling across services
+
+      ## For API Gateway:
+      1. Update to use auth-service for token validation
+      2. Add pass-through headers for authenticated requests
+      3. Update rate limiting to work with new auth tokens
+
+      ## For Frontend Applications:
+      1. Update API endpoints from `/auth/login` to `/api/v2/auth/login`
+      2. Update token refresh logic to use new endpoints
+      3. Update error handling for 401/403 responses
+      4. Test login/logout flows
+
+      ## Requirements
+      - Must not break existing tests
+      - Add new tests for auth-service integration
+      - Follow existing code style
+      - Update configuration files (config.yaml, .env.example)
+
+    verifiers:
+      - name: build
+        command: ["sh", "-c", "if [ -f go.mod ]; then go build ./...; elif [ -f package.json ]; then npm run build; fi"]
+
+      - name: test
+        command: ["sh", "-c", "if [ -f go.mod ]; then go test ./...; elif [ -f package.json ]; then npm test; fi"]
+
+# Require human approval before creating PRs
+require_approval: true
+
+# Pull request configuration
+pull_request:
+  branch_prefix: "migration/centralized-auth"
+  title: "Migrate to centralized authentication service"
+  body: |
+    ## Summary
+    Migrates this service to use the new centralized authentication service.
+
+    ## Changes
+    - Updated authentication middleware
+    - Integrated auth-service client library
+    - Updated configuration
+    - Added tests for new auth flow
+
+    ## Testing
+    - [x] All existing tests pass
+    - [x] New auth integration tests added
+    - [x] Manual testing with auth-service completed
+
+    ## Rollout Plan
+    1. Deploy auth-service to staging
+    2. Deploy this service to staging
+    3. Validate authentication flows
+    4. Deploy to production in rolling fashion
+
+    ---
+    🤖 Automated migration by Claude Code Orchestrator
+
+  labels:
+    - migration
+    - authentication
+    - automated
+
+  reviewers:
+    - platform-team-lead
+    - security-engineer
+
+  team_reviewers:
+    - platform-team
+
+# Allow 45 minutes total (15 minutes per group with 3 parallel)
+timeout: 45m
+
+# Metadata
+ticket_url: "https://jira.example.com/ENG-9012"
+owner: "platform-team"
+slack_channel: "#platform-migrations"

@@ -1,0 +1,145 @@
+# Multi-Repository Dependency Inventory Example
+#
+# This example demonstrates discovery across multiple repositories.
+# It showcases:
+# - Report mode (no code changes)
+# - Multi-repository analysis (6 services)
+# - Structured data collection with schema validation
+# - Parallel execution for speed
+# - No approval needed (discovery only)
+#
+# Scenario: Before planning a Go 1.22 migration, you need to inventory
+# what Go versions and key dependencies each service uses.
+
+version: 1
+id: go-dependency-inventory
+title: "Inventory: Go versions and dependencies across services"
+description: "Collect Go version, module dependencies, and build tool info before migration"
+mode: report
+
+# Multiple repositories to analyze - real public Go projects
+repositories:
+  - url: https://github.com/prometheus/prometheus.git
+    branch: main
+
+  - url: https://github.com/grafana/loki.git
+    branch: main
+
+  - url: https://github.com/traefik/traefik.git
+    branch: master
+
+  - url: https://github.com/minio/minio.git
+    branch: master
+
+  - url: https://github.com/go-gitea/gitea.git
+    branch: main
+
+  - url: https://github.com/hashicorp/terraform.git
+    branch: main
+
+execution:
+  agentic:
+    prompt: |
+      Analyze this Go repository and create a dependency inventory report.
+
+      ## What to Collect
+
+      1. **Go Version**
+         - Check go.mod for the Go version directive
+         - Note if using older syntax or missing version
+
+      2. **Key Dependencies**
+         - List major dependencies (frameworks, databases, etc.)
+         - Note versions of critical libraries:
+           - Web frameworks (gin, echo, chi, etc.)
+           - Database drivers (pgx, mysql, mongo, etc.)
+           - gRPC/protobuf libraries
+           - Logging libraries
+           - Testing frameworks
+
+      3. **Build Configuration**
+         - Check for Dockerfile and note Go version used
+         - Check for GitHub Actions and note Go version
+         - Note if using Make, just, or other build tools
+
+      4. **Module Info**
+         - Count total number of direct dependencies
+         - Note if using replace directives
+         - Check for any deprecated dependencies (look for warnings)
+
+      ## Output Format
+
+      Write your findings to /workspace/{repo-name}/REPORT.md with YAML frontmatter:
+
+      ---
+      service_name: "prometheus"
+      go_version: "1.22"
+      docker_go_version: "1.22"
+      ci_go_version: "1.22"
+      total_dependencies: 87
+      key_dependencies:
+        - name: "github.com/prometheus/client_golang"
+          version: "v1.19.0"
+        - name: "go.uber.org/atomic"
+          version: "v1.11.0"
+      has_replace_directives: true
+      migration_blockers: []
+      ---
+
+      # Dependency Inventory: prometheus
+
+      ## Go Version
+      - go.mod: 1.22
+      - Dockerfile: 1.22
+      - CI: 1.22
+      ✅ All consistent
+
+      ## Key Dependencies
+      [detailed analysis...]
+
+    output:
+      schema:
+        type: object
+        required:
+          - service_name
+          - go_version
+          - total_dependencies
+          - key_dependencies
+        properties:
+          service_name:
+            type: string
+          go_version:
+            type: string
+          docker_go_version:
+            type: string
+          ci_go_version:
+            type: string
+          total_dependencies:
+            type: integer
+            minimum: 0
+          key_dependencies:
+            type: array
+            items:
+              type: object
+              properties:
+                name:
+                  type: string
+                version:
+                  type: string
+          has_replace_directives:
+            type: boolean
+          migration_blockers:
+            type: array
+            items:
+              type: string
+
+# No approval needed for discovery
+require_approval: false
+
+# Allow 20 minutes total (3-4 minutes per service with parallel execution)
+timeout: 20m
+
+# Metadata
+ticket_url: "https://jira.example.com/ENG-5678"
+owner: "platform-team"
+slack_channel: "#platform-migration"

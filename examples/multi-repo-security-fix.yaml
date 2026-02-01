@@ -1,0 +1,157 @@
+# Multi-Repository Security Fix Example
+#
+# This example demonstrates applying a security fix across multiple microservices.
+# It showcases:
+# - Multi-repository processing (5 services)
+# - Parallel execution for faster completion
+# - Consistent verifiers across all repos
+# - Human approval before creating PRs
+# - Proper PR labeling and review assignment
+#
+# Scenario: A vulnerability was discovered in JWT token validation across all
+# authentication-enabled services. We need to add expiration checks consistently.
+
+version: 1
+id: jwt-expiration-fix
+title: "Security: Add JWT token expiration validation"
+description: "Fix CVE-2024-XXXX: Missing token expiration check in auth middleware"
+mode: transform
+
+# Multiple repositories - all services with JWT authentication
+repositories:
+  - url: https://github.com/yourorg/user-service.git
+    branch: main
+    setup:
+      - go mod download
+
+  - url: https://github.com/yourorg/order-service.git
+    branch: main
+    setup:
+      - go mod download
+
+  - url: https://github.com/yourorg/payment-service.git
+    branch: main
+    setup:
+      - go mod download
+
+  - url: https://github.com/yourorg/notification-service.git
+    branch: main
+    setup:
+      - go mod download
+
+  - url: https://github.com/yourorg/analytics-service.git
+    branch: main
+    setup:
+      - go mod download
+
+execution:
+  agentic:
+    prompt: |
+      Fix the JWT token expiration vulnerability in this service.
+
+      ## The Issue
+      The current authentication middleware accepts expired JWT tokens because
+      it doesn't validate the `exp` (expiration) claim.
+
+      ## What to Change
+      1. Find the JWT validation code (likely in middleware/auth.go or pkg/auth/)
+      2. Add validation for token.Claims.ExpiresAt
+      3. Return 401 Unauthorized if token is expired
+      4. Add a test case for expired token validation
+
+      ## Example Fix
+      ```go
+      // Before
+      if !token.Valid {
+          return errors.New("invalid token")
+      }
+
+      // After
+      if !token.Valid {
+          return errors.New("invalid token")
+      }
+
+      claims := token.Claims.(jwt.MapClaims)
+      if exp, ok := claims["exp"].(float64); ok {
+          if time.Now().Unix() > int64(exp) {
+              return errors.New("token expired")
+          }
+      }
+      ```
+
+      ## Requirements
+      - Must not break existing tests
+      - Add test coverage for expired tokens
+      - Follow existing code style in the repository
+
+    verifiers:
+      - name: build
+        command: ["go", "build", "./..."]
+
+      - name: test
+        command: ["go", "test", "./...", "-v"]
+
+      - name: lint
+        command: ["golangci-lint", "run"]
+
+    limits:
+      max_iterations: 20
+      max_tokens: 100000
+
+# Each repository gets its own sandbox for independent parallel processing
+# Auto-generated: one group per repository
+max_parallel: 5
+
+# Require human approval before creating PRs
+require_approval: true
+
+# Pull request configuration
+pull_request:
+  branch_prefix: "security/jwt-expiration"
+  title: "Security: Add JWT token expiration validation (CVE-2024-XXXX)"
+  body: |
+    ## Summary
+    Fixes a security vulnerability where expired JWT tokens were being accepted.
+
+    ## Changes
+    - Added expiration time validation in JWT middleware
+    - Returns 401 Unauthorized for expired tokens
+    - Added test coverage for expired token scenarios
+
+    ## Security Impact
+    - **Severity**: High
+    - **CVE**: CVE-2024-XXXX
+    - **CVSS Score**: 7.5
+
+    ## Testing
+    - [x] All existing tests pass
+    - [x] New test for expired token validation added
+    - [x] Manual testing with expired token confirms rejection
+
+    ## References
+    - Security advisory: https://internal-security.example.com/CVE-2024-XXXX
+    - Remediation guide: https://docs.example.com/jwt-security
+
+    ---
+    🤖 Automated fix by Claude Code Orchestrator
+
+  labels:
+    - security
+    - critical
+    - automated
+    - jwt
+
+  reviewers:
+    - security-team-lead
+    - platform-engineer
+
+  team_reviewers:
+    - security-team
+
+# Allow 30 minutes total (6 minutes per service with 5 parallel)
+timeout: 30m
+
+# Metadata for tracking
+ticket_url: "https://jira.example.com/SEC-1234"
+owner: "security-team"
+slack_channel: "#security-alerts"

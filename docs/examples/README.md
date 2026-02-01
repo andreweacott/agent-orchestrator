@@ -33,7 +33,7 @@ This directory contains detailed examples demonstrating different features and u
 If you're new to the orchestrator, we recommend:
 
 1. Start with the **Quick Start** in the main [README](../../README.md)
-2. Try the smoke test: `./bin/cli run -f examples/smoke-test-discovery.yaml`
+2. Try the smoke test: `./bin/orchestrator run -f examples/smoke-test-discovery.yaml`
 3. Review the **[Security Audit](01-security-audit.md)** example for report mode
 4. Try the **[Code Transformation](03-code-transformation.md)** example for transform mode
 

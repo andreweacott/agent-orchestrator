@@ -211,7 +211,7 @@ sandbox:
 |------|-------------|
 | `--repos <url1,url2>` | Target multiple repositories |
 | `--verifier "name:command"` | Add a verifier (can repeat) |
-| `--parallel` | Execute repositories in parallel |
+| `--parallel` | Auto-generate parallel groups (one repo per group) |
 | `--no-approval` | Skip human approval (use with caution) |
 | `--output json` | Output results as JSON |
 
@@ -255,7 +255,7 @@ execution:
 
 timeout: 30m
 require_approval: true
-parallel: true
+max_parallel: 5  # Process repos concurrently
 
 pull_request:
   branch_prefix: "auto/slog-migration"

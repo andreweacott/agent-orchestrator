@@ -63,7 +63,7 @@ require_approval: true
 
 ```bash
 # Start the transformation workflow
-./bin/cli run -f examples/task-agentic.yaml
+./bin/orchestrator run -f examples/task-agentic.yaml
 
 # Monitor progress in Temporal UI
 open http://localhost:8233
@@ -75,10 +75,10 @@ open http://localhost:8233
 # 4. Wait for approval...
 
 # Review changes in Temporal UI, then approve
-./bin/cli approve --workflow-id transform-fix-auth-vulnerability
+./bin/orchestrator approve --workflow-id transform-fix-auth-vulnerability
 
 # PRs are created automatically after approval
-./bin/cli result --workflow-id transform-fix-auth-vulnerability
+./bin/orchestrator result --workflow-id transform-fix-auth-vulnerability
 ```
 
 ## Workflow Steps
@@ -157,11 +157,11 @@ repositories:
   - url: https://github.com/org/repo-a.git
   - url: https://github.com/org/repo-b.git
 
-# Parallel - all PRs created simultaneously
+# Parallel - repos processed independently in separate sandboxes
 repositories:
   - url: https://github.com/org/repo-a.git
   - url: https://github.com/org/repo-b.git
-parallel: true
+max_parallel: 5  # Auto-generates one group per repo
 ```
 
 ## Best Practices

@@ -1,0 +1,127 @@
+# Execution Patterns Example
+#
+# This example demonstrates the unified groups-based execution model.
+# All execution patterns (combined/parallel/grouped) are now expressed
+# through the groups field, providing maximum flexibility.
+#
+# NOTE: This file shows multiple patterns for documentation purposes.
+# In practice, you'd use ONE of these patterns per task.
+
+version: 1
+id: execution-patterns-demo
+title: "Demonstration of execution patterns"
+description: "Shows how to configure different execution patterns using groups"
+mode: transform
+
+# ============================================================================
+# PATTERN 1: Combined (all repos in one sandbox)
+# ============================================================================
+# Use case: When Claude needs to see all repositories together
+# Example: Refactoring shared types across multiple services
+#
+# groups:
+#   - name: all-services
+#     repositories:
+#       - url: https://github.com/org/service-a.git
+#       - url: https://github.com/org/service-b.git
+#       - url: https://github.com/org/service-c.git
+#
+# Execution: 1 sandbox, all repos cloned together, Claude sees everything
+# ============================================================================
+
+# ============================================================================
+# PATTERN 2: Parallel (one sandbox per repo, processed independently)
+# ============================================================================
+# Use case: Independent changes across many repositories
+# Example: Upgrading a dependency fleet-wide
+#
+# max_parallel: 5  # Process 5 repos concurrently
+# groups:
+#   - name: service-a
+#     repositories:
+#       - url: https://github.com/org/service-a.git
+#   - name: service-b
+#     repositories:
+#       - url: https://github.com/org/service-b.git
+#   - name: service-c
+#     repositories:
+#       - url: https://github.com/org/service-c.git
+#   # ... more repos
+#
+# Execution: N sandboxes (one per repo), processed in parallel with max_parallel limit
+#
+# Alternative: Use the repositories field without groups (auto-generates pattern above)
+# repositories:
+#   - url: https://github.com/org/service-a.git
+#   - url: https://github.com/org/service-b.git
+#   - url: https://github.com/org/service-c.git
+# ============================================================================
+
+# ============================================================================
+# PATTERN 3: Grouped (custom organization of repos into sandboxes)
+# ============================================================================
+# Use case: Some repos need cross-context, others are independent
+# Example: Auth migration where backend services need to coordinate
+#
+# This is the pattern we'll demonstrate below:
+
+max_parallel: 3
+
+groups:
+  # Backend services share context
+  - name: backend-auth
+    repositories:
+      - url: https://github.com/yourorg/user-service.git
+        branch: main
+      - url: https://github.com/yourorg/auth-service.git
+        branch: main
+      - url: https://github.com/yourorg/session-service.git
+        branch: main
+
+  # API gateway needs to see both perspectives
+  - name: api-gateway
+    repositories:
+      - url: https://github.com/yourorg/api-gateway.git
+        branch: main
+
+  # Frontend apps are independent
+  - name: web-frontend
+    repositories:
+      - url: https://github.com/yourorg/web-app.git
+        branch: main
+
+  - name: mobile-frontend
+    repositories:
+      - url: https://github.com/yourorg/mobile-app.git
+        branch: main
+
+# Execution: 4 sandboxes (one per group), up to 3 processed concurrently
+# Group 1: 3 backend repos share one sandbox (Claude sees all 3)
+# Group 2: API gateway gets its own sandbox
+# Group 3-4: Frontend apps each get their own sandbox
+# ============================================================================
+
+execution:
+  agentic:
+    prompt: |
+      Update authentication to use the new auth service.
+
+      For backend services: coordinate auth token validation.
+      For API gateway: update routing and headers.
+      For frontend: update API endpoints.
+
+    verifiers:
+      - name: build
+        command: ["sh", "-c", "if [ -f go.mod ]; then go build ./...; elif [ -f package.json ]; then npm run build; fi"]
+
+      - name: test
+        command: ["sh", "-c", "if [ -f go.mod ]; then go test ./...; elif [ -f package.json ]; then npm test; fi"]
+
+require_approval: true
+
+pull_request:
+  branch_prefix: "auto/auth-migration"
+  title: "Migrate to centralized auth service"
+  labels: ["automated", "auth-migration"]
+
+timeout: 30m

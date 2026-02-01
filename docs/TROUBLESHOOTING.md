@@ -53,10 +53,10 @@ The `status` command only works for **running** workflows. Use `result` for comp
 **Solution:**
 ```bash
 # Wrong (for completed workflow)
-./bin/cli status --workflow-id transform-my-task
+./bin/orchestrator status --workflow-id transform-my-task
 
 # Correct
-./bin/cli result --workflow-id transform-my-task
+./bin/orchestrator result --workflow-id transform-my-task
 ```
 
 ### "Workflow waiting for approval indefinitely"
@@ -75,7 +75,7 @@ The `status` command only works for **running** workflows. Use `result` for comp
 
 2. **Approve the workflow:**
    ```bash
-   ./bin/cli approve --workflow-id transform-<task-id>
+   ./bin/orchestrator approve --workflow-id transform-<task-id>
    ```
 
 3. **Check approval status in Temporal UI:**
@@ -415,7 +415,7 @@ mode: transform  # Correct
 ### "No reports found"
 
 **Symptoms:**
-- `./bin/cli reports` returns empty
+- `./bin/orchestrator reports` returns empty
 - Workflow completed but no data
 
 **Solutions:**

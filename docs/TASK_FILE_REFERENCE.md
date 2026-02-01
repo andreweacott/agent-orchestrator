@@ -300,23 +300,122 @@ require_approval: false  # Auto-proceed after verifiers pass
 - ❌ Proven, tested transformations
 - ❌ Report mode (no code changes)
 
-## Parallel Execution
+## Repository Groups & Execution Patterns
+
+The platform uses a **groups-based model** for organizing repositories into sandboxes.
+
+### Basic Patterns
+
+**Pattern 1: Combined (all repos in one sandbox)**
+```yaml
+groups:
+  - name: all-services
+    repositories:
+      - url: https://github.com/org/auth.git
+      - url: https://github.com/org/users.git
+      - url: https://github.com/org/sessions.git
+```
+*Use when: Claude needs cross-repo context for coordinated changes*
+
+**Pattern 2: Parallel (one sandbox per repo)**
+```yaml
+# Auto-generates one group per repo
+repositories:
+  - url: https://github.com/org/service-1.git
+  - url: https://github.com/org/service-2.git
+  - url: https://github.com/org/service-3.git
+
+max_parallel: 5  # Process up to 5 concurrently
+```
+*Use when: Independent changes across many repos*
+
+**Pattern 3: Grouped (custom organization)**
+```yaml
+max_parallel: 3
+
+groups:
+  # Backend services share context
+  - name: backend
+    repositories:
+      - url: https://github.com/org/auth.git
+      - url: https://github.com/org/users.git
+
+  # Each frontend app gets its own sandbox
+  - name: web-app
+    repositories:
+      - url: https://github.com/org/web.git
+
+  - name: mobile-app
+    repositories:
+      - url: https://github.com/org/mobile.git
+```
+*Use when: Mix of related and independent repos*
+
+### max_parallel
 
 ```yaml
-repositories:
-  - url: https://github.com/org/repo-1.git
-  - url: https://github.com/org/repo-2.git
-  - url: https://github.com/org/repo-3.git
-
-parallel: true  # Create all 3 PRs simultaneously
+max_parallel: 5  # Default: 5
 ```
 
-**Default:** Sequential (one at a time)
+Controls concurrency across groups:
+- 1 group: Always runs in single sandbox (ignored)
+- 2+ groups: Limits how many run simultaneously
+- Higher values = faster, but more resource usage
 
-**Use parallel when:**
-- Repositories are independent
-- Want faster completion
-- Have sufficient worker capacity
+### Backward Compatibility
+
+```yaml
+# Old way (still works) - auto-generates parallel groups
+repositories:
+  - url: https://github.com/org/repo.git
+
+# New way (explicit control)
+groups:
+  - name: repo
+    repositories:
+      - url: https://github.com/org/repo.git
+```
+
+Both are equivalent. Use `groups` when you need custom organization.
+
+### Choosing an Execution Pattern
+
+**Use Combined when:**
+- ✅ Refactoring shared types across services
+- ✅ Coordinating API changes between client and server
+- ✅ Migrating authentication across related services
+- ✅ Any change requiring cross-repository context
+
+**Use Parallel when:**
+- ✅ Upgrading dependencies fleet-wide
+- ✅ Applying security patches independently
+- ✅ Updating configuration across many repos
+- ✅ Changes that don't require cross-repo awareness
+
+**Use Grouped when:**
+- ✅ Some repos need coordination, others don't
+- ✅ Different teams/domains with different contexts
+- ✅ Mix of related backend services and independent frontends
+- ✅ Optimizing for both context and parallelism
+
+### Performance Considerations
+
+**Combined (1 sandbox):**
+- Slowest: All repos cloned, single execution
+- Best for: 2-5 related repos
+- Memory: High (all repos in memory)
+
+**Parallel (N sandboxes):**
+- Fastest: Independent parallel execution
+- Best for: 10+ independent repos
+- Memory: N × repo size (distributed)
+- Limited by: max_parallel setting
+
+**Grouped (M sandboxes):**
+- Flexible: Balance context and speed
+- Best for: Mixed requirements
+- Memory: M × group size (distributed)
+- Limited by: max_parallel setting
 
 ## Optional Metadata
 
@@ -387,7 +486,7 @@ pull_request:
 
 timeout: 45m
 require_approval: true
-parallel: false
+max_parallel: 5
 
 # Metadata
 ticket_url: "https://jira.example.com/SEC-456"
@@ -400,7 +499,7 @@ slack_channel: "#security-updates"
 The CLI validates task files before starting workflows:
 
 ```bash
-./bin/cli run -f task.yaml
+./bin/orchestrator run -f task.yaml
 # Error: missing required field 'id'
 # Error: invalid mode 'transforms' (must be 'transform' or 'report')
 # Error: timeout must be a valid duration (e.g., '30m', '2h')

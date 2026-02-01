@@ -342,7 +342,19 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 		// CLI flags can override file settings
 		if parallel {
-			task.Parallel = true
+			// Convert repositories to individual groups for parallel execution
+			if len(task.Repositories) > 1 && len(task.Groups) == 0 {
+				for _, repo := range task.Repositories {
+					task.Groups = append(task.Groups, model.RepositoryGroup{
+						Name:         repo.Name,
+						Repositories: []model.Repository{repo},
+					})
+				}
+				task.Repositories = nil // Clear to avoid duplication
+			}
+			if task.MaxParallel == 0 {
+				task.MaxParallel = 5
+			}
 		}
 		if mode != "" && mode != "transform" {
 			task.Mode = model.TaskMode(mode)
@@ -406,7 +418,18 @@ func runRun(cmd *cobra.Command, args []string) error {
 			Repositories:    repositories,
 			Timeout:         timeout,
 			RequireApproval: !noApproval,
-			Parallel:        parallel,
+			MaxParallel:     5,
+		}
+
+		// If parallel flag is set, convert repos to individual groups
+		if parallel && len(repositories) > 1 {
+			for _, repo := range repositories {
+				task.Groups = append(task.Groups, model.RepositoryGroup{
+					Name:         repo.Name,
+					Repositories: []model.Repository{repo},
+				})
+			}
+			task.Repositories = nil // Clear to avoid duplication
 		}
 
 		// Set execution configuration
@@ -438,10 +461,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 			"title":            task.Title,
 			"workflow_id":      workflowID,
 			"mode":             string(task.GetMode()),
-			"repositories":     len(task.Repositories),
+			"groups":           len(task.GetExecutionGroups()),
 			"verifiers":        len(task.Execution.GetVerifiers()),
 			"require_approval": task.RequireApproval,
-			"parallel":         task.Parallel,
+			"max_parallel":     task.GetMaxParallel(),
 			"execution_type":   string(executionType),
 			"url":              fmt.Sprintf("http://localhost:8233/namespaces/default/workflows/%s", workflowID),
 		}
@@ -464,10 +487,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if executionType == model.ExecutionTypeDeterministic {
 		fmt.Printf("  Image: %s\n", task.Execution.Deterministic.Image)
 	}
-	fmt.Printf("  Repositories: %d\n", len(task.Repositories))
+	groups := task.GetExecutionGroups()
+	fmt.Printf("  Groups: %d", len(groups))
+	if len(groups) > 1 {
+		fmt.Printf(" (max parallel: %d)", task.GetMaxParallel())
+	}
+	fmt.Printf("\n")
 	fmt.Printf("  Verifiers: %d\n", len(task.Execution.GetVerifiers()))
-	fmt.Printf("  Require approval: %v\n", task.RequireApproval)
-	fmt.Printf("  Parallel: %v\n\n", task.Parallel)
+	fmt.Printf("  Require approval: %v\n\n", task.RequireApproval)
 
 	fmt.Printf("Workflow started: %s\n", workflowID)
 	fmt.Printf("View at: http://localhost:8233/namespaces/default/workflows/%s\n", workflowID)

@@ -61,13 +61,13 @@ require_approval: false
 
 ```bash
 # Run the forEach analysis
-./bin/cli run -f examples/task-foreach.yaml
+./bin/orchestrator run -f examples/task-foreach.yaml
 
 # View all results
-./bin/cli reports transform-api-endpoint-audit -o json
+./bin/orchestrator reports transform-api-endpoint-audit -o json
 
 # Filter to specific target
-./bin/cli reports transform-api-endpoint-audit --target users-api
+./bin/orchestrator reports transform-api-endpoint-audit --target users-api
 ```
 
 ## Output Structure

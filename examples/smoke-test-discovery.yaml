@@ -9,12 +9,12 @@
 #   1. Set API key:        export ANTHROPIC_API_KEY=sk-ant-...
 #   2. Start Temporal:     make temporal-dev          (Terminal 1)
 #   3. Start worker:       make run-worker            (Terminal 2)
-#   4. Run smoke test:     ./bin/cli run -f examples/smoke-test-discovery.yaml
+#   4. Run smoke test:     ./bin/orchestrator run -f examples/smoke-test-discovery.yaml
 #   5. Wait for completion (approx 30-60 seconds for Claude Code execution)
-#   6. Check result:       ./bin/cli result --workflow-id transform-smoke-test-discovery
-#   7. View reports:       ./bin/cli reports transform-smoke-test-discovery
-#      Full JSON output:   ./bin/cli reports transform-smoke-test-discovery -o json
-#      Save to file:       ./bin/cli reports transform-smoke-test-discovery -o json > report.json
+#   6. Check result:       ./bin/orchestrator result --workflow-id transform-smoke-test-discovery
+#   7. View reports:       ./bin/orchestrator reports transform-smoke-test-discovery
+#      Full JSON output:   ./bin/orchestrator reports transform-smoke-test-discovery -o json
+#      Save to file:       ./bin/orchestrator reports transform-smoke-test-discovery -o json > report.json
 #
 # Notes:
 #   - The workflow ID is automatically prefixed with "transform-"

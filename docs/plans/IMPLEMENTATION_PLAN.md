@@ -96,7 +96,7 @@ orchestrator run \
 ### 2.2 Multi-Repository Support
 
 - [x] Update workflow to iterate over repositories
-- [x] Parallel vs sequential execution option *(--parallel flag, Parallel field in task)*
+- [x] Flexible execution patterns via groups *(unified groups-based model, max_parallel field)*
 - [x] Aggregate results across repos
 
 ### 2.3 Task Result Improvements

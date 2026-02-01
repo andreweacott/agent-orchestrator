@@ -1,4 +1,4 @@
-.PHONY: build test clean worker cli sandbox-image all temporal-dev temporal-up temporal-down temporal-logs sandbox-build
+.PHONY: build test clean worker orchestrator sandbox-image all temporal-dev temporal-up temporal-down temporal-logs sandbox-build
 
 # Build all binaries
 all: build
@@ -6,15 +6,15 @@ all: build
 # Build binaries
 build:
 	go build -o bin/worker ./cmd/worker
-	go build -o bin/cli ./cmd/cli
+	go build -o bin/orchestrator ./cmd/cli
 
 # Build worker only
 worker:
 	go build -o bin/worker ./cmd/worker
 
 # Build CLI only
-cli:
-	go build -o bin/cli ./cmd/cli
+orchestrator:
+	go build -o bin/orchestrator ./cmd/cli
 
 # Run tests
 test:
@@ -57,15 +57,15 @@ temporal-dev:
 
 # Start Temporal with docker-compose (persistent, production-like)
 temporal-up:
-	docker-compose up -d
+	docker compose up -d
 
 # Stop Temporal docker-compose
 temporal-down:
-	docker-compose down
+	docker compose down
 
 # View Temporal logs
 temporal-logs:
-	docker-compose logs -f temporal
+	docker compose logs -f temporal
 
 # Build sandbox image
 sandbox-build:

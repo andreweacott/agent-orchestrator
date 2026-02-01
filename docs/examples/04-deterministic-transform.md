@@ -54,10 +54,10 @@ pull_request:
 
 ```bash
 # Run the deterministic transformation
-./bin/cli run -f examples/task-deterministic.yaml
+./bin/orchestrator run -f examples/task-deterministic.yaml
 
 # No approval needed - PRs created automatically after verifiers pass
-./bin/cli result --workflow-id transform-log4j-upgrade
+./bin/orchestrator result --workflow-id transform-log4j-upgrade
 ```
 
 ## Docker Image Requirements

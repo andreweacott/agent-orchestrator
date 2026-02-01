@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # Temporal server with all components (auto-setup mode)
   temporal:
@@ -19,7 +17,7 @@ services:
     volumes:
       - ./config/temporal:/etc/temporal/config/dynamicconfig
     healthcheck:
-      test: ["CMD", "temporal", "operator", "cluster", "health"]
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
       interval: 10s
       timeout: 5s
       retries: 10

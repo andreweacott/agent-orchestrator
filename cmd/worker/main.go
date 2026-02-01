@@ -60,8 +60,9 @@ func main() {
 	// Create worker
 	w := worker.New(c, internalclient.TaskQueue, worker.Options{})
 
-	// Register workflow
+	// Register workflows
 	w.RegisterWorkflow(workflow.Transform)
+	w.RegisterWorkflow(workflow.TransformGroup)
 
 	// Register activities with explicit names to match workflow constants
 	w.RegisterActivityWithOptions(sandboxActivities.ProvisionSandbox, temporalactivity.RegisterOptions{Name: activity.ActivityProvisionSandbox})

@@ -10,6 +10,9 @@ import (
 // SchemaVersion is the current supported schema version.
 const SchemaVersion = 1
 
+// DefaultMaxParallel is the default concurrency limit for grouped execution.
+const DefaultMaxParallel = 5
+
 // TaskStatus represents the status of a task.
 type TaskStatus string
 
@@ -40,6 +43,13 @@ const (
 	TaskModeTransform TaskMode = "transform" // Creates PRs (default)
 	TaskModeReport    TaskMode = "report"    // Collects structured output, no PRs
 )
+
+// Execution strategies are now unified into the groups model.
+// Previously we had combined/parallel/grouped strategies, but these can all be
+// expressed through different group configurations:
+// - Combined: One group with all repos
+// - Parallel: N groups, each with one repo
+// - Grouped: M groups with varying repo counts
 
 // Repository represents a repository to clone into the sandbox.
 type Repository struct {
@@ -167,6 +177,12 @@ type ForEachExecution struct {
 	Error  *string       `json:"error,omitempty"`
 }
 
+// RepositoryGroup represents a named group of repositories that share a sandbox.
+type RepositoryGroup struct {
+	Name         string       `json:"name" yaml:"name"`
+	Repositories []Repository `json:"repositories" yaml:"repositories"`
+}
+
 // SandboxConfig contains Kubernetes sandbox settings for production.
 type SandboxConfig struct {
 	Namespace    string            `json:"namespace,omitempty" yaml:"namespace,omitempty"`
@@ -244,7 +260,11 @@ type Task struct {
 	// Execution settings
 	Timeout         string `json:"timeout,omitempty" yaml:"timeout,omitempty"` // e.g., "30m"
 	RequireApproval bool   `json:"require_approval,omitempty" yaml:"require_approval,omitempty"`
-	Parallel        bool   `json:"parallel,omitempty" yaml:"parallel,omitempty"` // Execute PR creation in parallel
+	MaxParallel     int    `json:"max_parallel,omitempty" yaml:"max_parallel,omitempty"` // Concurrency limit across groups (default: 5)
+
+	// Repository groups - defines how repos are organized into sandboxes
+	// If empty, auto-generated from Repositories field (one group with all repos)
+	Groups []RepositoryGroup `json:"groups,omitempty" yaml:"groups,omitempty"`
 
 	// PR configuration (transform mode only)
 	PullRequest *PullRequestConfig `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
@@ -289,6 +309,50 @@ func (t Task) GetEffectiveRepositories() []Repository {
 		return t.Targets
 	}
 	return t.Repositories
+}
+
+// GetMaxParallel returns the max parallel limit, defaulting to DefaultMaxParallel.
+func (t Task) GetMaxParallel() int {
+	if t.MaxParallel <= 0 {
+		return DefaultMaxParallel
+	}
+	return t.MaxParallel
+}
+
+// GetExecutionGroups returns the groups to execute.
+// If Groups is explicitly set, returns it.
+// Otherwise, auto-generates groups from Repositories field for backward compatibility.
+func (t Task) GetExecutionGroups() []RepositoryGroup {
+	// If groups are explicitly defined, use them
+	if len(t.Groups) > 0 {
+		return t.Groups
+	}
+
+	// Backward compatibility: auto-generate groups from repositories
+	effectiveRepos := t.GetEffectiveRepositories()
+	if len(effectiveRepos) == 0 {
+		return nil
+	}
+
+	// Create one group per repository for parallel execution by default
+	// This maintains backward compatibility with the old "parallel" behavior when multiple repos were used
+	var groups []RepositoryGroup
+	for _, repo := range effectiveRepos {
+		groups = append(groups, RepositoryGroup{
+			Name:         repo.Name,
+			Repositories: []Repository{repo},
+		})
+	}
+	return groups
+}
+
+// GetAllRepositoriesFromGroups returns a flat list of all repositories from all groups.
+func (t Task) GetAllRepositoriesFromGroups() []Repository {
+	var allRepos []Repository
+	for _, group := range t.GetExecutionGroups() {
+		allRepos = append(allRepos, group.Repositories...)
+	}
+	return allRepos
 }
 
 // SandboxInfo contains information about a provisioned sandbox.

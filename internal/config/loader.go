@@ -71,12 +71,18 @@ type taskV1 struct {
 	TicketURL       string           `yaml:"ticket_url,omitempty"`
 	SlackChannel    string           `yaml:"slack_channel,omitempty"`
 	Requester       string           `yaml:"requester,omitempty"`
-	Timeout         string           `yaml:"timeout,omitempty"`
-	RequireApproval *bool            `yaml:"require_approval,omitempty"`
-	Parallel        bool             `yaml:"parallel,omitempty"`
-	PullRequest     *pullRequestV1   `yaml:"pull_request,omitempty"`
+	Timeout         string         `yaml:"timeout,omitempty"`
+	RequireApproval *bool          `yaml:"require_approval,omitempty"`
+	MaxParallel     int            `yaml:"max_parallel,omitempty"`
+	Groups          []groupV1      `yaml:"groups,omitempty"`
+	PullRequest     *pullRequestV1 `yaml:"pull_request,omitempty"`
 	Sandbox         *sandboxV1       `yaml:"sandbox,omitempty"`
 	Credentials     *credentialsV1   `yaml:"credentials,omitempty"`
+}
+
+type groupV1 struct {
+	Name         string         `yaml:"name"`
+	Repositories []repositoryV1 `yaml:"repositories"`
 }
 
 type forEachV1 struct {
@@ -206,6 +212,13 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 	hasTransformation := tv1.Transformation != nil
 	hasTargets := len(tv1.Targets) > 0
 	hasRepositories := len(tv1.Repositories) > 0
+	hasGroups := len(tv1.Groups) > 0
+
+	// Validate groups and repositories are mutually exclusive
+	if hasGroups && hasRepositories {
+		return nil, errors.New("cannot use both 'groups' and 'repositories' fields; " +
+			"use 'groups' for grouped execution or 'repositories' for legacy mode")
+	}
 
 	if hasTransformation {
 		// Transformation mode: targets are optional (transformation repo may be self-contained)
@@ -250,7 +263,7 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 		Description: tv1.Description,
 		Mode:        model.TaskMode(tv1.Mode),
 		Timeout:     tv1.Timeout,
-		Parallel:    tv1.Parallel,
+		MaxParallel: tv1.MaxParallel,
 	}
 
 	// Default require_approval to true if not specified
@@ -274,6 +287,18 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 	// Convert repositories (legacy mode)
 	for _, r := range tv1.Repositories {
 		task.Repositories = append(task.Repositories, convertRepository(r))
+	}
+
+	// Convert groups (grouped strategy)
+	for _, g := range tv1.Groups {
+		var repos []model.Repository
+		for _, r := range g.Repositories {
+			repos = append(repos, convertRepository(r))
+		}
+		task.Groups = append(task.Groups, model.RepositoryGroup{
+			Name:         g.Name,
+			Repositories: repos,
+		})
 	}
 
 	// Convert and validate ForEach

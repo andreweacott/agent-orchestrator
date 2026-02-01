@@ -57,16 +57,16 @@ require_approval: false
 
 ```bash
 # Run the audit
-./bin/cli run -f examples/task-report.yaml
+./bin/orchestrator run -f examples/task-report.yaml
 
 # View results in table format
-./bin/cli reports transform-security-audit-2024
+./bin/orchestrator reports transform-security-audit-2024
 
 # Get full JSON output
-./bin/cli reports transform-security-audit-2024 -o json > audit-results.json
+./bin/orchestrator reports transform-security-audit-2024 -o json > audit-results.json
 
 # Get only the structured data (frontmatter)
-./bin/cli reports transform-security-audit-2024 --frontmatter-only -o json
+./bin/orchestrator reports transform-security-audit-2024 --frontmatter-only -o json
 ```
 
 ## Output Structure

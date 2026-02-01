@@ -163,6 +163,20 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	executionType := task.Execution.GetExecutionType()
 	timeoutMinutes := task.GetTimeoutMinutes()
 
+	// Get effective repositories and execution groups
+	effectiveRepos := task.GetEffectiveRepositories()
+	executionGroups := task.GetExecutionGroups()
+
+	// Branch based on number of groups for transform mode
+	// Note: Report mode always uses single-sandbox combined strategy
+	if task.GetMode() == model.TaskModeTransform && len(executionGroups) > 1 {
+		logger.Info("Using multi-group execution", "groups", len(executionGroups), "maxParallel", task.GetMaxParallel())
+		return executeGroupedStrategy(ctx, task, startTime, signalDone), nil
+	}
+
+	// Single-group execution: one sandbox with all repos (combined strategy)
+	logger.Info("Using single-sandbox execution", "repos", len(effectiveRepos))
+
 	// 1. Provision sandbox
 	status = model.TaskStatusProvisioning
 	logger.Info("Starting transform workflow", "taskID", task.ID)
@@ -195,9 +209,6 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	if err := workflow.ExecuteActivity(cloneCtx, activity.ActivityCloneRepositories, cloneInput).Get(cloneCtx, &clonedPaths); err != nil {
 		return failedResult(fmt.Sprintf("Failed to clone repositories: %v", err)), nil
 	}
-
-	// Get effective repositories (targets when using transformation mode, repos otherwise)
-	effectiveRepos := task.GetEffectiveRepositories()
 
 	// 3. Run transformation (Claude Code OR Deterministic)
 	status = model.TaskStatusRunning
@@ -584,34 +595,24 @@ func Transform(ctx workflow.Context, task model.Task) (*model.TaskResult, error)
 	prDesc := buildPRDescriptionWithFiles(task, filesModified)
 	prTitle := fmt.Sprintf("fix: %s", task.Title)
 
-	if task.Parallel && len(effectiveRepos) > 1 {
-		// Parallel PR creation for multi-repo tasks
-		logger.Info("Creating PRs in parallel", "repos", len(effectiveRepos))
-		var prErr error
-		pullRequests, prErr = createPRsParallel(ctx, task, sandbox.ContainerID, prTitle, prDesc)
-		if prErr != nil {
-			return failedResult(prErr.Error()), nil
+	// Sequential PR creation (parallel strategy uses child workflows)
+	for _, repo := range effectiveRepos {
+		input := activity.CreatePullRequestInput{
+			ContainerID:             sandbox.ContainerID,
+			Repo:                    repo,
+			TaskID:                  task.ID,
+			Title:                   prTitle,
+			Description:             prDesc,
+			PRConfig:                task.PullRequest,
+			UseTransformationLayout: task.UsesTransformationRepo(),
 		}
-	} else {
-		// Sequential PR creation (default)
-		for _, repo := range effectiveRepos {
-			input := activity.CreatePullRequestInput{
-				ContainerID:             sandbox.ContainerID,
-				Repo:                    repo,
-				TaskID:                  task.ID,
-				Title:                   prTitle,
-				Description:             prDesc,
-				PRConfig:                task.PullRequest,
-				UseTransformationLayout: task.UsesTransformationRepo(),
-			}
-			var pr *model.PullRequest
-			if err := workflow.ExecuteActivity(ctx, activity.ActivityCreatePullRequest, input).Get(ctx, &pr); err != nil {
-				return failedResult(fmt.Sprintf("Failed to create PR: %v", err)), nil
-			}
+		var pr *model.PullRequest
+		if err := workflow.ExecuteActivity(ctx, activity.ActivityCreatePullRequest, input).Get(ctx, &pr); err != nil {
+			return failedResult(fmt.Sprintf("Failed to create PR: %v", err)), nil
+		}
 
-			if pr != nil {
-				pullRequests = append(pullRequests, *pr)
-			}
+		if pr != nil {
+			pullRequests = append(pullRequests, *pr)
 		}
 	}
 
@@ -838,64 +839,183 @@ func getChangesSummary(ctx workflow.Context, containerID string, repos []model.R
 	return strings.Join(summaries, "\n\n")
 }
 
-// prResult holds the result of a parallel PR creation attempt.
-type prResult struct {
-	repo model.Repository
-	pr   *model.PullRequest
-	err  error
-}
+// executeGroupedStrategy executes the grouped execution strategy.
+// It spawns child workflows for each group with concurrency limiting.
+func executeGroupedStrategy(ctx workflow.Context, task model.Task, startTime time.Time, signalDone func()) *model.TaskResult {
+	logger := workflow.GetLogger(ctx)
 
-// createPRsParallel creates pull requests for all repositories in parallel.
-func createPRsParallel(ctx workflow.Context, task model.Task, containerID, prTitle, prDesc string) ([]model.PullRequest, error) {
-	// Create a channel to collect results
+	// Build shared data for child workflows
+	agentsMD := generateAgentsMD(task)
+	prDesc := buildPRDescriptionWithFiles(task, nil) // Files will be per-group
+	prTitle := fmt.Sprintf("fix: %s", task.Title)
+
+	// If approval is required, wait for it at the parent level before spawning children
+	if task.RequireApproval {
+		approved := false
+		cancelled := false
+
+		approveChannel := workflow.GetSignalChannel(ctx, SignalApprove)
+		rejectChannel := workflow.GetSignalChannel(ctx, SignalReject)
+		cancelChannel := workflow.GetSignalChannel(ctx, SignalCancel)
+
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(approveChannel, func(c workflow.ReceiveChannel, more bool) {
+			c.Receive(ctx, nil)
+			approved = true
+		})
+		selector.AddReceive(rejectChannel, func(c workflow.ReceiveChannel, more bool) {
+			c.Receive(ctx, nil)
+			cancelled = true
+		})
+		selector.AddReceive(cancelChannel, func(c workflow.ReceiveChannel, more bool) {
+			c.Receive(ctx, nil)
+			cancelled = true
+		})
+
+		logger.Info("Waiting for approval before grouped execution")
+
+		// Wait for approval with 24hr timeout
+		ok, _ := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
+			return approved || cancelled
+		})
+
+		if !ok || cancelled || !approved {
+			signalDone()
+			duration := workflow.Now(ctx).Sub(startTime).Seconds()
+			errMsg := "Changes rejected or approval timeout"
+			if !ok {
+				errMsg = "Approval timeout (24 hours)"
+			}
+			return &model.TaskResult{
+				TaskID:          task.ID,
+				Status:          model.TaskStatusCancelled,
+				Mode:            task.GetMode(),
+				Error:           &errMsg,
+				DurationSeconds: &duration,
+			}
+		}
+
+		logger.Info("Approval received, proceeding with grouped execution")
+	}
+
+	// Semaphore for concurrency limiting
+	maxParallel := task.GetMaxParallel()
+	numGroups := len(task.Groups)
+
+	// Calculate effective parallel count to avoid goroutine leak
+	// when there are fewer groups than maxParallel
+	effectiveParallel := maxParallel
+	if numGroups < effectiveParallel {
+		effectiveParallel = numGroups
+	}
+
+	semaphore := workflow.NewChannel(ctx)
+
+	// Pre-fill semaphore with only the tokens we'll actually use
+	workflow.Go(ctx, func(ctx workflow.Context) {
+		for i := 0; i < effectiveParallel; i++ {
+			semaphore.Send(ctx, struct{}{})
+		}
+	})
+
+	// Channel to collect results
 	resultChannel := workflow.NewChannel(ctx)
 
-	effectiveRepos := task.GetEffectiveRepositories()
-
-	// Launch parallel goroutines for each repository
-	for _, repo := range effectiveRepos {
-		repo := repo // capture loop variable
+	// Launch child workflows with concurrency control
+	for _, group := range task.Groups {
+		group := group // capture loop variable
 		workflow.Go(ctx, func(gCtx workflow.Context) {
-			input := activity.CreatePullRequestInput{
-				ContainerID:             containerID,
-				Repo:                    repo,
-				TaskID:                  task.ID,
-				Title:                   prTitle,
-				Description:             prDesc,
-				PRConfig:                task.PullRequest,
-				UseTransformationLayout: task.UsesTransformationRepo(),
-			}
-			var pr *model.PullRequest
-			err := workflow.ExecuteActivity(gCtx, activity.ActivityCreatePullRequest, input).Get(gCtx, &pr)
+			// Acquire semaphore
+			semaphore.Receive(gCtx, nil)
 
-			resultChannel.Send(gCtx, prResult{
-				repo: repo,
-				pr:   pr,
-				err:  err,
-			})
+			// Use disconnected context for cleanup to ensure semaphore
+			// is released even if workflow is cancelled
+			defer func() {
+				cleanupCtx, _ := workflow.NewDisconnectedContext(gCtx)
+				semaphore.Send(cleanupCtx, struct{}{})
+			}()
+
+			logger.Info("Starting child workflow for group", "group", group.Name)
+
+			// Start child workflow
+			childID := fmt.Sprintf("%s-%s", task.ID, group.Name)
+			childOptions := workflow.ChildWorkflowOptions{
+				WorkflowID: childID,
+			}
+			childCtx := workflow.WithChildOptions(gCtx, childOptions)
+
+			input := GroupTransformInput{
+				Task:     task,
+				Group:    group,
+				AgentsMD: agentsMD,
+				PRTitle:  prTitle,
+				PRDesc:   prDesc,
+				Approved: true, // Approval already obtained at parent level (or not required)
+			}
+
+			var result *GroupTransformResult
+			err := workflow.ExecuteChildWorkflow(childCtx, TransformGroup, input).Get(childCtx, &result)
+
+			if err != nil {
+				// Workflow execution error
+				logger.Error("Child workflow failed", "group", group.Name, "error", err)
+				errMsg := err.Error()
+				// Create failed results for all repos in the group
+				var repoResults []model.RepositoryResult
+				for _, repo := range group.Repositories {
+					repoResults = append(repoResults, model.RepositoryResult{
+						Repository: repo.Name,
+						Status:     "failed",
+						Error:      &errMsg,
+					})
+				}
+				resultChannel.Send(gCtx, repoResults)
+			} else if result != nil {
+				resultChannel.Send(gCtx, result.Repositories)
+			}
 		})
 	}
 
-	// Collect results from all goroutines
-	var pullRequests []model.PullRequest
-	var errors []string
+	// Collect all results
+	var allRepoResults []model.RepositoryResult
+	for i := 0; i < len(task.Groups); i++ {
+		var groupResults []model.RepositoryResult
+		resultChannel.Receive(ctx, &groupResults)
+		allRepoResults = append(allRepoResults, groupResults...)
+	}
 
-	for i := 0; i < len(effectiveRepos); i++ {
-		var result prResult
-		resultChannel.Receive(ctx, &result)
-
-		if result.err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", result.repo.Name, result.err))
-		} else if result.pr != nil {
-			pullRequests = append(pullRequests, *result.pr)
+	// Check for failures
+	var failedRepos []string
+	for _, r := range allRepoResults {
+		if r.Status == "failed" {
+			failedRepos = append(failedRepos, r.Repository)
 		}
 	}
 
-	if len(errors) > 0 {
-		return nil, fmt.Errorf("failed to create PRs: %s", strings.Join(errors, "; "))
+	signalDone()
+	duration := workflow.Now(ctx).Sub(startTime).Seconds()
+
+	if len(failedRepos) > 0 {
+		errMsg := fmt.Sprintf("Failed repositories: %s", strings.Join(failedRepos, ", "))
+		return &model.TaskResult{
+			TaskID:          task.ID,
+			Status:          model.TaskStatusFailed,
+			Mode:            task.GetMode(),
+			Repositories:    allRepoResults,
+			Error:           &errMsg,
+			DurationSeconds: &duration,
+		}
 	}
 
-	return pullRequests, nil
+	logger.Info("Grouped strategy completed successfully", "groups", len(task.Groups), "totalRepos", len(allRepoResults))
+
+	return &model.TaskResult{
+		TaskID:          task.ID,
+		Status:          model.TaskStatusCompleted,
+		Mode:            task.GetMode(),
+		Repositories:    allRepoResults,
+		DurationSeconds: &duration,
+	}
 }
 
 // substitutePromptTemplate substitutes {{.Name}} and {{.Context}} variables in the prompt.

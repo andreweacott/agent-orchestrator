@@ -72,7 +72,7 @@ execution:
       The target repo is at /workspace/targets/{{.RepoName}}
 
 timeout: 40m
-parallel: true  # Create PRs in parallel
+max_parallel: 5  # Process repos concurrently (auto-generates one group per repo)
 ```
 
 ## Transformation Repository Structure
@@ -126,7 +126,7 @@ This transformation migrates services from unstructured to structured logging.
 
 ```bash
 # Run the transformation
-./bin/cli run -f examples/task-transformation.yaml
+./bin/orchestrator run -f examples/task-transformation.yaml
 
 # Claude Code will:
 # 1. Clone transformation repo to /workspace/
@@ -139,10 +139,10 @@ This transformation migrates services from unstructured to structured logging.
 #    - Create PR
 
 # Monitor progress
-./bin/cli list --status Running
+./bin/orchestrator list --status Running
 
 # Get results
-./bin/cli result --workflow-id transform-migrate-logging
+./bin/orchestrator result --workflow-id transform-migrate-logging
 ```
 
 ## Combining with forEach
