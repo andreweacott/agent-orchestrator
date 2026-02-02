@@ -4,11 +4,11 @@
 ![Go Version](https://img.shields.io/github/go-mod-go-version/andreweacott/agent-orchestrator)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
+Durable **[Turbolift](https://github.com/Skyscanner/turbolift), with AI.**
+
 <p align="center">
   <img src="docs/images/header.jpg" alt="Claude Code Orchestrator - Pipeline visualization showing YAML to Temporal to Sandbox to AI/Docker to Approval to PR/Report flow" width="100%">
 </p>
-
-Durable **[Turbolift](https://github.com/Skyscanner/turbolift), with AI.**
 
 Ever needed to migrate an API across 50 services? Fix a security vulnerability fleet-wide? Or just understand what authentication patterns exist across all your repositories before making changes?
 
