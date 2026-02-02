@@ -1,13 +1,13 @@
-# Agent Orchestrator
+# Fleetlift
 
-![CI](https://github.com/andreweacott/agent-orchestrator/workflows/CI/badge.svg)
-![Go Version](https://img.shields.io/github/go-mod-go-version/andreweacott/agent-orchestrator)
+![CI](https://github.com/artisanlabs/fleetlift/workflows/CI/badge.svg)
+![Go Version](https://img.shields.io/github/go-mod-go-version/artisanlabs/fleetlift)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 Durable **[Turbolift](https://github.com/Skyscanner/turbolift), with AI.**
 
 <p align="center">
-  <img src="docs/images/header.jpg" alt="Claude Code Orchestrator - Pipeline visualization showing YAML to Temporal to Sandbox to AI/Docker to Approval to PR/Report flow" width="100%">
+  <img src="docs/images/header.jpg" alt="Fleetlift - Pipeline visualization showing YAML to Temporal to Sandbox to AI/Docker to Approval to PR/Report flow" width="100%">
 </p>
 
 Ever needed to migrate an API across 50 services? Fix a security vulnerability fleet-wide? Or just understand what authentication patterns exist across all your repositories before making changes?
@@ -81,7 +81,7 @@ See [IMPLEMENTATION_PLAN.md](docs/plans/IMPLEMENTATION_PLAN.md) for the full roa
 ```mermaid
 flowchart LR
     subgraph Input
-        CLI[/"CLI\n./bin/orchestrator run"/]
+        CLI[/"CLI\n./bin/fleetlift run"/]
         YAML[/"task.yaml"/]
     end
 
@@ -149,13 +149,13 @@ make run-worker
 **Terminal 3 — Run a Discovery Task:**
 ```bash
 # Run the smoke test
-./bin/orchestrator run -f examples/smoke-test-discovery.yaml
+./bin/fleetlift run -f examples/smoke-test-discovery.yaml
 
 # Check status
-./bin/orchestrator status --workflow-id transform-smoke-test-discovery
+./bin/fleetlift status --workflow-id transform-smoke-test-discovery
 
 # View the report
-./bin/orchestrator reports transform-smoke-test-discovery -o json
+./bin/fleetlift reports transform-smoke-test-discovery -o json
 ```
 
 Open http://localhost:8233 to see the workflow in the Temporal UI.
@@ -255,8 +255,8 @@ timeout: 15m
 
 **Run it:**
 ```bash
-./bin/orchestrator run -f auth-audit.yaml
-./bin/orchestrator reports transform-auth-audit -o json > audit-results.json
+./bin/fleetlift run -f auth-audit.yaml
+./bin/fleetlift reports transform-auth-audit -o json > audit-results.json
 ```
 
 </details>
@@ -307,13 +307,13 @@ pull_request:
 
 **Run it:**
 ```bash
-./bin/orchestrator run -f slog-migration.yaml
+./bin/fleetlift run -f slog-migration.yaml
 
 # Wait for completion, then review
-./bin/orchestrator status --workflow-id transform-slog-migration
+./bin/fleetlift status --workflow-id transform-slog-migration
 
 # Approve to create PRs
-./bin/orchestrator approve --workflow-id transform-slog-migration
+./bin/fleetlift approve --workflow-id transform-slog-migration
 ```
 
 </details>
@@ -353,10 +353,10 @@ pull_request:
 
 **Run it:**
 ```bash
-./bin/orchestrator run -f log4j-upgrade.yaml
+./bin/fleetlift run -f log4j-upgrade.yaml
 
 # No approval needed - deterministic transforms are pre-vetted
-./bin/orchestrator result --workflow-id transform-log4j-upgrade
+./bin/fleetlift result --workflow-id transform-log4j-upgrade
 ```
 
 </details>
@@ -365,21 +365,21 @@ pull_request:
 
 ```bash
 # Submit a task
-./bin/orchestrator run -f task.yaml
-./bin/orchestrator run --repos https://github.com/org/repo.git --prompt "Add input validation"
+./bin/fleetlift run -f task.yaml
+./bin/fleetlift run --repos https://github.com/org/repo.git --prompt "Add input validation"
 
 # Check status
-./bin/orchestrator list                              # List all workflows
-./bin/orchestrator status --workflow-id <id>         # Check specific workflow
+./bin/fleetlift list                              # List all workflows
+./bin/fleetlift status --workflow-id <id>         # Check specific workflow
 
 # Approve or reject
-./bin/orchestrator approve --workflow-id <id>
-./bin/orchestrator reject --workflow-id <id>
+./bin/fleetlift approve --workflow-id <id>
+./bin/fleetlift reject --workflow-id <id>
 
 # View results
-./bin/orchestrator result --workflow-id <id>         # Transform mode result
-./bin/orchestrator reports <workflow-id>             # Report mode output
-./bin/orchestrator reports <workflow-id> -o json     # Export as JSON
+./bin/fleetlift result --workflow-id <id>         # Transform mode result
+./bin/fleetlift reports <workflow-id>             # Report mode output
+./bin/fleetlift reports <workflow-id> -o json     # Export as JSON
 ```
 
 > **Note:** Workflow IDs are prefixed with `transform-`. If your task ID is `my-task`, the workflow ID is `transform-my-task`.
@@ -399,7 +399,7 @@ make lint
 # Run locally
 make temporal-dev     # Terminal 1: Start Temporal
 make run-worker       # Terminal 2: Start worker
-./bin/orchestrator run -f ...  # Terminal 3: Submit tasks
+./bin/fleetlift run -f ...  # Terminal 3: Submit tasks
 ```
 
 ### Project Structure

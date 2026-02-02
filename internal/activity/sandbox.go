@@ -12,8 +12,8 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"github.com/andreweacott/agent-orchestrator/internal/model"
-	"github.com/andreweacott/agent-orchestrator/internal/sandbox"
+	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/sandbox"
 )
 
 // gitRefPattern validates git ref names (branches, tags, repo names)

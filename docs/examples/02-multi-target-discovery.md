@@ -61,13 +61,13 @@ require_approval: false
 
 ```bash
 # Run the forEach analysis
-./bin/orchestrator run -f examples/task-foreach.yaml
+./bin/fleetlift run -f examples/task-foreach.yaml
 
 # View all results
-./bin/orchestrator reports transform-api-endpoint-audit -o json
+./bin/fleetlift reports transform-api-endpoint-audit -o json
 
 # Filter to specific target
-./bin/orchestrator reports transform-api-endpoint-audit --target users-api
+./bin/fleetlift reports transform-api-endpoint-audit --target users-api
 ```
 
 ## Output Structure

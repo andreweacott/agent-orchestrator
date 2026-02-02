@@ -10,10 +10,10 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/andreweacott/agent-orchestrator/internal/activity"
-	internalclient "github.com/andreweacott/agent-orchestrator/internal/client"
-	"github.com/andreweacott/agent-orchestrator/internal/sandbox/docker"
-	"github.com/andreweacott/agent-orchestrator/internal/workflow"
+	"github.com/artisanlabs/fleetlift/internal/activity"
+	internalclient "github.com/artisanlabs/fleetlift/internal/client"
+	"github.com/artisanlabs/fleetlift/internal/sandbox/docker"
+	"github.com/artisanlabs/fleetlift/internal/workflow"
 )
 
 func main() {
@@ -23,7 +23,9 @@ func main() {
 
 	// Set environment variable for activities to check
 	if *debugNoCleanup {
-		os.Setenv("DEBUG_NO_CLEANUP", "true")
+		if err := os.Setenv("DEBUG_NO_CLEANUP", "true"); err != nil {
+			log.Printf("Warning: failed to set DEBUG_NO_CLEANUP: %v", err)
+		}
 		log.Println("DEBUG MODE: Container cleanup disabled - containers will persist after workflow completion")
 	}
 	// Validate configuration at startup

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/andreweacott/agent-orchestrator/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/model"
 )
 
 func TestLoadTask_Valid(t *testing.T) {

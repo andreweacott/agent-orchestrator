@@ -126,7 +126,7 @@ This transformation migrates services from unstructured to structured logging.
 
 ```bash
 # Run the transformation
-./bin/orchestrator run -f examples/task-transformation.yaml
+./bin/fleetlift run -f examples/task-transformation.yaml
 
 # Claude Code will:
 # 1. Clone transformation repo to /workspace/
@@ -139,10 +139,10 @@ This transformation migrates services from unstructured to structured logging.
 #    - Create PR
 
 # Monitor progress
-./bin/orchestrator list --status Running
+./bin/fleetlift list --status Running
 
 # Get results
-./bin/orchestrator result --workflow-id transform-migrate-logging
+./bin/fleetlift result --workflow-id transform-migrate-logging
 ```
 
 ## Combining with forEach

@@ -63,7 +63,7 @@ require_approval: true
 
 ```bash
 # Start the transformation workflow
-./bin/orchestrator run -f examples/task-agentic.yaml
+./bin/fleetlift run -f examples/task-agentic.yaml
 
 # Monitor progress in Temporal UI
 open http://localhost:8233
@@ -75,10 +75,10 @@ open http://localhost:8233
 # 4. Wait for approval...
 
 # Review changes in Temporal UI, then approve
-./bin/orchestrator approve --workflow-id transform-fix-auth-vulnerability
+./bin/fleetlift approve --workflow-id transform-fix-auth-vulnerability
 
 # PRs are created automatically after approval
-./bin/orchestrator result --workflow-id transform-fix-auth-vulnerability
+./bin/fleetlift result --workflow-id transform-fix-auth-vulnerability
 ```
 
 ## Workflow Steps

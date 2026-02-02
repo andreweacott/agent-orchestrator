@@ -15,8 +15,8 @@ import (
 	"go.temporal.io/sdk/activity"
 	"gopkg.in/yaml.v3"
 
-	"github.com/andreweacott/agent-orchestrator/internal/model"
-	"github.com/andreweacott/agent-orchestrator/internal/sandbox"
+	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/sandbox"
 )
 
 // targetNamePattern validates target names to prevent path traversal.
@@ -84,7 +84,11 @@ func (a *ReportActivities) CollectReport(ctx context.Context, input CollectRepor
 			Error: fmt.Sprintf("failed to read REPORT.md: %v (agent may not have created the file)", err),
 		}, nil
 	}
-	defer reader.Close()
+	defer func() {
+		if cerr := reader.Close(); cerr != nil {
+			logger.Warn("Failed to close reader", "error", cerr)
+		}
+	}()
 
 	// Docker CopyFrom returns a tar archive - extract the file content
 	tarReader := tar.NewReader(reader)

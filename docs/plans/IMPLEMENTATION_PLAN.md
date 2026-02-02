@@ -62,16 +62,16 @@ Incremental implementation phases for the code transformation and discovery plat
 
 ### 1.6 CLI (Minimal)
 
-- [x] `orchestrator run --repo <url> --prompt <prompt>` *(both `start` and `run` commands)*
-- [x] `orchestrator run --file task.yaml` *(--file flag with YAML parsing)*
-- [x] `orchestrator status <task-id>` *(implemented as `status --workflow-id`)*
+- [x] `fleetlift run --repo <url> --prompt <prompt>` *(both `start` and `run` commands)*
+- [x] `fleetlift run --file task.yaml` *(--file flag with YAML parsing)*
+- [x] `fleetlift status <task-id>` *(implemented as `status --workflow-id`)*
 - [x] YAML task file parsing *(TaskFile struct with loadTaskFile function)*
 
 ### Deliverable
 
 Run an agentic task locally:
 ```bash
-orchestrator run \
+fleetlift run \
   --repo https://github.com/example/test-repo.git \
   --prompt "Add input validation" \
   --verifier "build:go build ./..." \
@@ -109,12 +109,12 @@ orchestrator run \
 
 - [x] `--repo` flag accepts multiple values *(comma-separated in `--repos`)*
 - [x] Output formatting (JSON, table) *(`--output` flag with json/table options)*
-- [x] `orchestrator list` command
+- [x] `fleetlift list` command
 
 ### Deliverable
 
 ```bash
-orchestrator run \
+fleetlift run \
   --repo https://github.com/org/service-a.git \
   --repo https://github.com/org/service-b.git \
   --prompt "Update API v1 to v2" \
@@ -159,7 +159,7 @@ orchestrator run \
 ### Deliverable
 
 ```bash
-orchestrator run \
+fleetlift run \
   --repo https://github.com/org/service.git \
   --image openrewrite/rewrite:latest \
   --args "rewrite:run" \
@@ -205,9 +205,9 @@ orchestrator run \
 
 ### 4.5 CLI Support
 
-- [x] `orchestrator run --mode report --prompt "..."` - run discovery
-- [x] `orchestrator reports <workflow-id>` - view collected reports
-- [x] `orchestrator reports <workflow-id> --output json` - export reports
+- [x] `fleetlift run --mode report --prompt "..."` - run discovery
+- [x] `fleetlift reports <workflow-id>` - view collected reports
+- [x] `fleetlift reports <workflow-id> --output json` - export reports
 - [x] Update `status` command to show reports for report-mode tasks
 
 ### Deliverable
@@ -263,14 +263,14 @@ Found API key in config/secrets.yaml...
 
 ```bash
 # Run discovery
-orchestrator run --file auth-audit.yaml
+fleetlift run --file auth-audit.yaml
 
 # View full reports (markdown)
-orchestrator reports auth-audit-xyz789
+fleetlift reports auth-audit-xyz789
 # Displays each repository's full report
 
 # Export structured data (frontmatter) for aggregation
-orchestrator reports auth-audit-xyz789 --format json > results.json
+fleetlift reports auth-audit-xyz789 --format json > results.json
 # [{"repository": "service-a", "frontmatter": {"auth_library": "oauth2", ...}}, ...]
 ```
 
@@ -306,7 +306,7 @@ orchestrator reports auth-audit-xyz789 --format json > results.json
 
 ### 4b.4 CLI Support
 
-- [x] Display per-target reports in `orchestrator reports` command
+- [x] Display per-target reports in `fleetlift reports` command
 - [x] Support `--target <name>` filter for viewing specific target reports
 - [x] JSON export includes target-level grouping
 
@@ -346,10 +346,10 @@ execution:
 
 ```bash
 # Run forEach discovery
-orchestrator run --file api-audit.yaml
+fleetlift run --file api-audit.yaml
 
 # View all target reports
-orchestrator reports <workflow-id>
+fleetlift reports <workflow-id>
 # Repository: api-gateway
 #   Target: users-api
 #     Frontmatter: {auth: "jwt", rate_limit: true, ...}
@@ -359,7 +359,7 @@ orchestrator reports <workflow-id>
 #     Frontmatter: {auth: "jwt", rate_limit: true, ...}
 
 # Export as JSON for aggregation
-orchestrator reports <workflow-id> --output json
+fleetlift reports <workflow-id> --output json
 ```
 
 ---
@@ -448,7 +448,7 @@ execution:
 
 ```bash
 # Run with transformation repo
-orchestrator run --file transformation-task.yaml
+fleetlift run --file transformation-task.yaml
 
 # Workspace layout:
 # /workspace/
@@ -773,7 +773,7 @@ helm install codetransform ./charts/codetransform \
 #### 9.2.3 Partial Approval
 
 - [ ] Allow approving specific files while requesting changes to others
-- [ ] `orchestrator approve --workflow-id <id> --files "src/main.go,src/util.go"`
+- [ ] `fleetlift approve --workflow-id <id> --files "src/main.go,src/util.go"`
 - [ ] `orchestrator steer --workflow-id <id> --files "src/test.go" --prompt "add edge case tests"`
 
 ### 9.3 Scheduled Tasks

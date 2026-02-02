@@ -53,10 +53,10 @@ The `status` command only works for **running** workflows. Use `result` for comp
 **Solution:**
 ```bash
 # Wrong (for completed workflow)
-./bin/orchestrator status --workflow-id transform-my-task
+./bin/fleetlift status --workflow-id transform-my-task
 
 # Correct
-./bin/orchestrator result --workflow-id transform-my-task
+./bin/fleetlift result --workflow-id transform-my-task
 ```
 
 ### "Workflow waiting for approval indefinitely"
@@ -75,7 +75,7 @@ The `status` command only works for **running** workflows. Use `result` for comp
 
 2. **Approve the workflow:**
    ```bash
-   ./bin/orchestrator approve --workflow-id transform-<task-id>
+   ./bin/fleetlift approve --workflow-id transform-<task-id>
    ```
 
 3. **Check approval status in Temporal UI:**
@@ -415,7 +415,7 @@ mode: transform  # Correct
 ### "No reports found"
 
 **Symptoms:**
-- `./bin/orchestrator reports` returns empty
+- `./bin/fleetlift reports` returns empty
 - Workflow completed but no data
 
 **Solutions:**
@@ -524,7 +524,7 @@ ERROR: Invalid API key
    - [Examples](examples/)
 
 3. **File an issue:**
-   - https://github.com/andreweacott/agent-orchestrator/issues
+   - https://github.com/artisanlabs/fleetlift/issues
    - Include: task file, error logs, Temporal workflow ID
 
 4. **Check Temporal docs:**

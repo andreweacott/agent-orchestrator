@@ -14,7 +14,7 @@ Set CursorBlink false
 
 # CLI overview
 Sleep 300ms
-Type "./bin/orchestrator --help"
+Type "./bin/fleetlift --help"
 Enter
 Sleep 3s
 
@@ -30,7 +30,7 @@ Ctrl+L
 Sleep 300ms
 
 # Run the workflow
-Type "./bin/orchestrator run -f examples/smoke-test-discovery.yaml"
+Type "./bin/fleetlift run -f examples/smoke-test-discovery.yaml"
 Enter
 Sleep 2s
 
@@ -38,7 +38,7 @@ Ctrl+L
 Sleep 300ms
 
 # Check status
-Type "./bin/orchestrator status --workflow-id transform-smoke-test-discovery"
+Type "./bin/fleetlift status --workflow-id transform-smoke-test-discovery"
 Enter
 Sleep 2s
 
@@ -51,7 +51,7 @@ Ctrl+L
 Sleep 300ms
 
 # Get the report
-Type "./bin/orchestrator reports transform-smoke-test-discovery -o json"
+Type "./bin/fleetlift reports transform-smoke-test-discovery -o json"
 Enter
 Sleep 3s
 

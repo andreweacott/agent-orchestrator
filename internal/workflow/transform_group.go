@@ -9,8 +9,8 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/andreweacott/agent-orchestrator/internal/activity"
-	"github.com/andreweacott/agent-orchestrator/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/activity"
+	"github.com/artisanlabs/fleetlift/internal/model"
 )
 
 // GroupTransformInput contains the input for processing a repository group.

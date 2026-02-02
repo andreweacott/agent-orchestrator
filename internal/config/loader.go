@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/andreweacott/agent-orchestrator/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/model"
 )
 
 // validTargetNameRegex validates forEach target names.

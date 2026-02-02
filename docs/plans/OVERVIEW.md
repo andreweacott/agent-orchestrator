@@ -168,7 +168,7 @@ Everything runs on your laptop:
 docker-compose up -d
 
 # Run a transformation
-orchestrator run \
+fleetlift run \
   --repo https://github.com/org/service.git \
   --prompt "Add input validation to API endpoints" \
   --verifier "build:go build ./..." \
@@ -197,13 +197,13 @@ sandbox:
 
 | Command | Description |
 |---------|-------------|
-| `orchestrator run --file task.yaml` | Submit a Task from file |
-| `orchestrator run --repo <url> --prompt <prompt>` | Submit an agentic Task |
-| `orchestrator run --repo <url> --image <image>` | Submit a deterministic Task |
-| `orchestrator status <workflow-id>` | Check Task status |
-| `orchestrator approve <workflow-id>` | Approve changes and create PRs |
-| `orchestrator reject <workflow-id>` | Reject changes |
-| `orchestrator list` | List all Tasks |
+| `fleetlift run --file task.yaml` | Submit a Task from file |
+| `fleetlift run --repo <url> --prompt <prompt>` | Submit an agentic Task |
+| `fleetlift run --repo <url> --image <image>` | Submit a deterministic Task |
+| `fleetlift status <workflow-id>` | Check Task status |
+| `fleetlift approve <workflow-id>` | Approve changes and create PRs |
+| `fleetlift reject <workflow-id>` | Reject changes |
+| `fleetlift list` | List all Tasks |
 
 ### Common Flags
 
@@ -264,18 +264,18 @@ pull_request:
 ```
 
 ```bash
-orchestrator run --file task.yaml
+fleetlift run --file task.yaml
 # Workflow started: slog-migration-abc123
 # Status: Running (2/10 repositories complete)
 
-orchestrator status slog-migration-abc123
+fleetlift status slog-migration-abc123
 # Status: AwaitingApproval
 # Repositories:
 #   service-a: ready (15 files modified)
 #   service-b: ready (8 files modified)
 #   ...
 
-orchestrator approve slog-migration-abc123
+fleetlift approve slog-migration-abc123
 # Creating PRs...
 # PR created: https://github.com/org/service-a/pull/123
 # PR created: https://github.com/org/service-b/pull/456
@@ -355,19 +355,19 @@ JWT tokens have no expiration claim...
 ```
 
 ```bash
-orchestrator run --file auth-audit.yaml
+fleetlift run --file auth-audit.yaml
 # Workflow started: auth-security-audit-xyz789
 
-orchestrator status auth-security-audit-xyz789
+fleetlift status auth-security-audit-xyz789
 # Status: Completed
 # Repositories: 50/50 complete
 
 # View individual reports (full markdown)
-orchestrator reports auth-security-audit-xyz789
+fleetlift reports auth-security-audit-xyz789
 # Displays each repository's report
 
 # Export structured data (frontmatter only) for aggregation
-orchestrator reports auth-security-audit-xyz789 --format json > audit-results.json
+fleetlift reports auth-security-audit-xyz789 --format json > audit-results.json
 ```
 
 ### Example 3: Log4j Upgrade (Deterministic)
@@ -489,10 +489,10 @@ The workspace layout when using transformation mode:
 
 ```bash
 # Run endpoint classification
-orchestrator run --file endpoint-analysis.yaml
+fleetlift run --file endpoint-analysis.yaml
 
 # View reports per endpoint
-orchestrator reports endpoint-classification-xyz
+fleetlift reports endpoint-classification-xyz
 # Repository: (transformation)
 #   Target: users-endpoint
 #     classification: keep

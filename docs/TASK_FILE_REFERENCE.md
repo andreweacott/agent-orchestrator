@@ -499,7 +499,7 @@ slack_channel: "#security-updates"
 The CLI validates task files before starting workflows:
 
 ```bash
-./bin/orchestrator run -f task.yaml
+./bin/fleetlift run -f task.yaml
 # Error: missing required field 'id'
 # Error: invalid mode 'transforms' (must be 'transform' or 'report')
 # Error: timeout must be a valid duration (e.g., '30m', '2h')

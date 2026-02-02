@@ -1,20 +1,20 @@
-.PHONY: build test clean worker orchestrator sandbox-image all temporal-dev temporal-up temporal-down temporal-logs sandbox-build
+.PHONY: build test clean fleetlift-worker fleetlift sandbox-image all temporal-dev temporal-up temporal-down temporal-logs sandbox-build
 
 # Build all binaries
 all: build
 
 # Build binaries
 build:
-	go build -o bin/worker ./cmd/worker
-	go build -o bin/orchestrator ./cmd/cli
+	go build -o bin/fleetlift-worker ./cmd/worker
+	go build -o bin/fleetlift ./cmd/cli
 
 # Build worker only
-worker:
-	go build -o bin/worker ./cmd/worker
+fleetlift-worker:
+	go build -o bin/fleetlift-worker ./cmd/worker
 
 # Build CLI only
-orchestrator:
-	go build -o bin/orchestrator ./cmd/cli
+fleetlift:
+	go build -o bin/fleetlift ./cmd/cli
 
 # Run tests
 test:
@@ -35,8 +35,8 @@ sandbox-image:
 	docker build -f ../docker/Dockerfile.sandbox -t claude-code-sandbox:latest ../docker
 
 # Run the worker (requires Temporal server)
-run-worker: worker
-	./bin/worker
+run-worker: fleetlift-worker
+	./bin/fleetlift-worker
 
 # Format code
 fmt:

@@ -17,7 +17,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 
-	"github.com/andreweacott/agent-orchestrator/internal/sandbox"
+	"github.com/artisanlabs/fleetlift/internal/sandbox"
 )
 
 // Provider implements sandbox.Provider using Docker containers.
@@ -340,7 +340,9 @@ func (p *Provider) PullImageIfNeeded(ctx context.Context, imageName string) erro
 	if err != nil {
 		return fmt.Errorf("failed to pull image: %w", err)
 	}
-	defer reader.Close()
+	defer func() {
+		_ = reader.Close()
+	}()
 
 	// Wait for pull to complete
 	_, err = io.Copy(io.Discard, reader)

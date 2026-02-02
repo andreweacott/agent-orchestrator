@@ -1,4 +1,4 @@
-module github.com/andreweacott/agent-orchestrator
+module github.com/artisanlabs/fleetlift
 
 go 1.22.0
 

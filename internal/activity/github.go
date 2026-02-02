@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/sdk/activity"
 	"golang.org/x/oauth2"
 
-	"github.com/andreweacott/agent-orchestrator/internal/model"
-	"github.com/andreweacott/agent-orchestrator/internal/sandbox"
+	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/sandbox"
 )
 
 // GitHubActivities contains activities for GitHub operations.

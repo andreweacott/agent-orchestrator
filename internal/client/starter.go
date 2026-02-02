@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
-	"github.com/andreweacott/agent-orchestrator/internal/model"
-	"github.com/andreweacott/agent-orchestrator/internal/workflow"
+	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/workflow"
 )
 
 // TaskQueue is the default task queue for transform workflows.

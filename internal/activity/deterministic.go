@@ -9,8 +9,8 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"github.com/andreweacott/agent-orchestrator/internal/model"
-	"github.com/andreweacott/agent-orchestrator/internal/sandbox"
+	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/sandbox"
 )
 
 // shellQuote properly quotes a string for safe use in shell commands.
@@ -25,12 +25,17 @@ func isValidEnvKey(key string) bool {
 		return false
 	}
 	for i, c := range key {
+		isUpper := c >= 'A' && c <= 'Z'
+		isLower := c >= 'a' && c <= 'z'
+		isDigit := c >= '0' && c <= '9'
+		isUnderscore := c == '_'
+
 		if i == 0 {
-			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') {
+			if !isUpper && !isLower && !isUnderscore {
 				return false
 			}
 		} else {
-			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+			if !isUpper && !isLower && !isDigit && !isUnderscore {
 				return false
 			}
 		}

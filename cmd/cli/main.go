@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/andreweacott/agent-orchestrator/internal/client"
-	"github.com/andreweacott/agent-orchestrator/internal/config"
-	"github.com/andreweacott/agent-orchestrator/internal/model"
+	"github.com/artisanlabs/fleetlift/internal/client"
+	"github.com/artisanlabs/fleetlift/internal/config"
+	"github.com/artisanlabs/fleetlift/internal/model"
 )
 
 // OutputFormat specifies the output format for CLI commands.
@@ -31,9 +31,9 @@ func must(err error) {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "orchestrator",
-	Short: "Code Transformation Orchestrator CLI",
-	Long:  "CLI for running code transformations and discovery tasks across repositories",
+	Use:   "fleetlift",
+	Short: "Fleetlift - Fleet-wide code transformations with AI",
+	Long:  "CLI for running durable code transformations and discovery tasks across repositories",
 }
 
 var statusCmd = &cobra.Command{
@@ -234,7 +234,7 @@ func runResult(cmd *cobra.Command, args []string) error {
 		if errorCount > 0 {
 			fmt.Printf("  Errors: %d\n", errorCount)
 		}
-		fmt.Printf("\n  Use 'orchestrator reports %s' to view report details.\n", workflowID)
+		fmt.Printf("\n  Use 'fleetlift reports %s' to view report details.\n", workflowID)
 	} else {
 		// Transform mode: show PRs
 		var hasPRs bool

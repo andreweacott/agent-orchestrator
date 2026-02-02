@@ -109,7 +109,7 @@ Claude Code runs from `/workspace`, so transformation repo skills are automatica
 │   Interface Layer                                                           │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │   CLI                    │   (Optional) K8s Operator                │   │
-│   │   orchestrator run       │   Watches YAML, submits to Temporal      │   │
+│   │   fleetlift run       │   Watches YAML, submits to Temporal      │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │       │                                        │                             │
 │       └────────────────────┬───────────────────┘                             │
@@ -155,7 +155,7 @@ Claude Code runs from `/workspace`, so transformation repo skills are automatica
 
 ### Interface Hierarchy
 
-1. **CLI** (`orchestrator run --file task.yaml`) - Direct submission to Temporal
+1. **CLI** (`fleetlift run --file task.yaml`) - Direct submission to Temporal
 2. **Temporal API** - Programmatic workflow submission
 3. **(Optional) K8s Operator** - Watches YAML resources, submits to Temporal
 
@@ -180,7 +180,7 @@ The K8s operator is an optional convenience layer. The CLI and Temporal API are 
 All Task and Campaign YAML files require a `version` field. This enables:
 
 - **Forward compatibility**: Older CLI versions reject unknown schema versions
-- **Migration tooling**: `orchestrator migrate --file task.yaml` upgrades schemas
+- **Migration tooling**: `fleetlift migrate --file task.yaml` upgrades schemas
 - **Clear deprecation**: Announce version sunset with migration period
 
 **Version Format**: Integer (e.g., `1`, `2`)
@@ -1467,7 +1467,7 @@ The agent runs these using its Bash tool, sees output, and iterates until all pa
 
 ### Final Gate Validation
 
-Even after the agent reports success, the orchestrator runs verifiers as a final check:
+Even after the agent reports success, the fleetlift runs verifiers as a final check:
 
 ```go
 func RunVerifiers(ctx context.Context, sandbox Sandbox, verifiers []Verifier) (*VerifiersResult, error) {
@@ -1649,7 +1649,7 @@ Credentials are passed via environment variables:
 export GITHUB_TOKEN=ghp_xxxx
 export ANTHROPIC_API_KEY=sk-ant-xxxx
 
-orchestrator run --file task.yaml
+fleetlift run --file task.yaml
 ```
 
 ### Production (Kubernetes)
