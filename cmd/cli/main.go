@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/artisanlabs/fleetlift/internal/client"
-	"github.com/artisanlabs/fleetlift/internal/config"
-	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/tinkerloft/fleetlift/internal/client"
+	"github.com/tinkerloft/fleetlift/internal/config"
+	"github.com/tinkerloft/fleetlift/internal/model"
 )
 
 // OutputFormat specifies the output format for CLI commands.

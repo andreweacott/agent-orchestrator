@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/testsuite"
 
-	"github.com/artisanlabs/fleetlift/internal/activity"
-	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/tinkerloft/fleetlift/internal/activity"
+	"github.com/tinkerloft/fleetlift/internal/model"
 )
 
 // MockActivities holds mock implementations of activities

@@ -10,10 +10,10 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/artisanlabs/fleetlift/internal/activity"
-	internalclient "github.com/artisanlabs/fleetlift/internal/client"
-	"github.com/artisanlabs/fleetlift/internal/sandbox/docker"
-	"github.com/artisanlabs/fleetlift/internal/workflow"
+	"github.com/tinkerloft/fleetlift/internal/activity"
+	internalclient "github.com/tinkerloft/fleetlift/internal/client"
+	"github.com/tinkerloft/fleetlift/internal/sandbox/docker"
+	"github.com/tinkerloft/fleetlift/internal/workflow"
 )
 
 func main() {

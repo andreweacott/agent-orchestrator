@@ -1,4 +1,4 @@
-module github.com/artisanlabs/fleetlift
+module github.com/tinkerloft/fleetlift
 
 go 1.22.0
 

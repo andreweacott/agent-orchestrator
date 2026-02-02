@@ -8,8 +8,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/artisanlabs/fleetlift/internal/model"
-	"github.com/artisanlabs/fleetlift/internal/sandbox"
+	"github.com/tinkerloft/fleetlift/internal/model"
+	"github.com/tinkerloft/fleetlift/internal/sandbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"

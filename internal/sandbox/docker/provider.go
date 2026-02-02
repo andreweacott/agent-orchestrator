@@ -17,7 +17,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 
-	"github.com/artisanlabs/fleetlift/internal/sandbox"
+	"github.com/tinkerloft/fleetlift/internal/sandbox"
 )
 
 // Provider implements sandbox.Provider using Docker containers.

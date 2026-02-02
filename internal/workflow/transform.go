@@ -11,8 +11,8 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/artisanlabs/fleetlift/internal/activity"
-	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/tinkerloft/fleetlift/internal/activity"
+	"github.com/tinkerloft/fleetlift/internal/model"
 )
 
 // Signal and query names

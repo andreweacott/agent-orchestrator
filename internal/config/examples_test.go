@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/artisanlabs/fleetlift/internal/model"
+	"github.com/tinkerloft/fleetlift/internal/model"
 )
 
 func TestLoadExampleFiles(t *testing.T) {

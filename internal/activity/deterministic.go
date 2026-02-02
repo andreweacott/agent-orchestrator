@@ -9,8 +9,8 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"github.com/artisanlabs/fleetlift/internal/model"
-	"github.com/artisanlabs/fleetlift/internal/sandbox"
+	"github.com/tinkerloft/fleetlift/internal/model"
+	"github.com/tinkerloft/fleetlift/internal/sandbox"
 )
 
 // shellQuote properly quotes a string for safe use in shell commands.

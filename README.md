@@ -1,7 +1,7 @@
 # Fleetlift
 
-![CI](https://github.com/artisanlabs/fleetlift/workflows/CI/badge.svg)
-![Go Version](https://img.shields.io/github/go-mod-go-version/artisanlabs/fleetlift)
+![CI](https://github.com/tinkerloft/fleetlift/workflows/CI/badge.svg)
+![Go Version](https://img.shields.io/github/go-mod-go-version/tinkerloft/fleetlift)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 Durable **[Turbolift](https://github.com/Skyscanner/turbolift), with AI.**

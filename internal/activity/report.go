@@ -15,8 +15,8 @@ import (
 	"go.temporal.io/sdk/activity"
 	"gopkg.in/yaml.v3"
 
-	"github.com/artisanlabs/fleetlift/internal/model"
-	"github.com/artisanlabs/fleetlift/internal/sandbox"
+	"github.com/tinkerloft/fleetlift/internal/model"
+	"github.com/tinkerloft/fleetlift/internal/sandbox"
 )
 
 // targetNamePattern validates target names to prevent path traversal.

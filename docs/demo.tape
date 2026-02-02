@@ -21,8 +21,8 @@ Sleep 3s
 Ctrl+L
 Sleep 300ms
 
-# Show task file
-Type "cat examples/smoke-test-discovery.yaml"
+# Show task file (key parts: config, repo, and prompt)
+Type "sed -n '27,56p' examples/smoke-test-discovery.yaml"
 Enter
 Sleep 4s
 
