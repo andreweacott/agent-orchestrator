@@ -59,3 +59,5 @@ dist/
 build/
 *.tar.gz
 *.zip
+
+.claude/settings.local.json
