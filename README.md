@@ -63,12 +63,14 @@ This is a working prototype with the core functionality implemented.
 | **forEach Discovery** | ✅ | Iterate over multiple targets within a repo |
 | **Transformation Repos** | ✅ | Reusable skills and tools across projects |
 | **Slack Notifications** | ✅ | Get notified when approval is needed |
+| **Grouped Execution** | ✅ | Parallel execution with failure thresholds |
+| **Pause/Continue** | ✅ | Human intervention when failures exceed threshold |
+| **Retry Failed Groups** | ✅ | Retry only the groups that failed |
 
 ### 🔜 What's Coming
 
 | Feature | Phase | Description |
 |---------|:-----:|-------------|
-| **Campaigns** | 5 | Batch execution across 100+ repos with failure thresholds |
 | **Kubernetes Sandbox** | 6 | Production-grade isolated execution |
 | **Observability** | 7 | Metrics, dashboards, and alerting |
 | **Security Hardening** | 8 | RBAC, network policies, secret management |
@@ -210,6 +212,60 @@ groups:
 *Result: 3 sandboxes, up to 3 running concurrently*
 
 See [`examples/execution-patterns.yaml`](examples/execution-patterns.yaml) for detailed examples.
+
+## Fleet-Wide Operations
+
+For large-scale operations, use failure thresholds to pause execution when things go wrong:
+
+```yaml
+version: 1
+id: fleet-migration
+title: "Migrate logging across 50 services"
+
+groups:
+  - name: team-a
+    repositories: [service-1, service-2]
+  - name: team-b
+    repositories: [service-3]
+  # ... 25 more teams
+
+execution:
+  agentic:
+    prompt: "Migrate to slog..."
+
+max_parallel: 5  # Process 5 teams concurrently
+
+failure:
+  threshold_percent: 20  # Pause if >20% of groups fail
+  action: pause          # Wait for human decision
+```
+
+**What happens:**
+- Groups execute in parallel (up to 5 at a time)
+- After each group, check if failure rate > 20%
+- If threshold exceeded, workflow **pauses** and waits
+- You can: continue, skip remaining, or cancel
+
+**Commands:**
+```bash
+# Check status during execution
+fleetlift status
+# Status: PAUSED
+# Reason: Failure threshold exceeded (25% > 20%)
+# Progress: 8/25 groups complete
+# Failed: team-b, team-d
+
+# Option 1: Fix issues and continue
+fleetlift continue
+
+# Option 2: Skip remaining groups and finish
+fleetlift continue --skip-remaining
+
+# Option 3: After completion, retry only failed groups
+fleetlift retry --file task.yaml --failed-only
+```
+
+See [`docs/GROUPED_EXECUTION.md`](docs/GROUPED_EXECUTION.md) for complete documentation.
 
 ## Real-World Examples
 

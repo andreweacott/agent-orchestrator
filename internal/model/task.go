@@ -183,6 +183,36 @@ type RepositoryGroup struct {
 	Repositories []Repository `json:"repositories" yaml:"repositories"`
 }
 
+// FailureConfig defines failure handling for grouped execution.
+type FailureConfig struct {
+	ThresholdPercent int    `json:"threshold_percent,omitempty" yaml:"threshold_percent,omitempty"`
+	Action           string `json:"action,omitempty" yaml:"action,omitempty"` // "pause" (default) or "abort"
+}
+
+// GroupResult tracks per-group execution status (for TaskResult).
+type GroupResult struct {
+	GroupName    string             `json:"group_name"`
+	Status       string             `json:"status"` // "success" | "failed" | "pending" | "skipped"
+	Repositories []RepositoryResult `json:"repositories,omitempty"`
+	Error        *string            `json:"error,omitempty"`
+}
+
+// ExecutionProgress for query handler (real-time progress).
+type ExecutionProgress struct {
+	TotalGroups      int      `json:"total_groups"`
+	CompletedGroups  int      `json:"completed_groups"`
+	FailedGroups     int      `json:"failed_groups"`
+	FailurePercent   float64  `json:"failure_percent"`
+	IsPaused         bool     `json:"is_paused"`
+	PausedReason     string   `json:"paused_reason,omitempty"`
+	FailedGroupNames []string `json:"failed_group_names,omitempty"`
+}
+
+// ContinueSignalPayload for continue signal.
+type ContinueSignalPayload struct {
+	SkipRemaining bool `json:"skip_remaining"`
+}
+
 // SandboxConfig contains Kubernetes sandbox settings for production.
 type SandboxConfig struct {
 	Namespace    string            `json:"namespace,omitempty" yaml:"namespace,omitempty"`
@@ -266,6 +296,9 @@ type Task struct {
 	// Repository groups - defines how repos are organized into sandboxes
 	// If empty, auto-generated from Repositories field (one group with all repos)
 	Groups []RepositoryGroup `json:"groups,omitempty" yaml:"groups,omitempty"`
+
+	// Failure handling configuration (grouped execution only)
+	Failure *FailureConfig `json:"failure,omitempty" yaml:"failure,omitempty"`
 
 	// PR configuration (transform mode only)
 	PullRequest *PullRequestConfig `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
@@ -446,10 +479,14 @@ type TaskResult struct {
 	Status          TaskStatus         `json:"status"`
 	Mode            TaskMode           `json:"mode,omitempty"`
 	Repositories    []RepositoryResult `json:"repositories,omitempty"`
+	Groups          []GroupResult      `json:"groups,omitempty"`
 	StartedAt       *time.Time         `json:"started_at,omitempty"`
 	CompletedAt     *time.Time         `json:"completed_at,omitempty"`
 	Error           *string            `json:"error,omitempty"`
 	DurationSeconds *float64           `json:"duration_seconds,omitempty"`
+
+	// For retry lineage tracking
+	OriginalWorkflowID *string `json:"original_workflow_id,omitempty"`
 
 	// Deprecated: Use Repositories[].PullRequest instead. Kept for backward compatibility.
 	PullRequests []PullRequest `json:"pull_requests,omitempty"`
@@ -563,4 +600,30 @@ func StringPtr(s string) *string {
 
 func Float64Ptr(f float64) *float64 {
 	return &f
+}
+
+// GetFailureThresholdPercent returns the failure threshold percentage, defaulting to 0 (no threshold).
+func (t Task) GetFailureThresholdPercent() int {
+	if t.Failure == nil {
+		return 0
+	}
+	return t.Failure.ThresholdPercent
+}
+
+// GetFailureAction returns the failure action, defaulting to "pause".
+func (t Task) GetFailureAction() string {
+	if t.Failure == nil || t.Failure.Action == "" {
+		return "pause"
+	}
+	return t.Failure.Action
+}
+
+// ShouldPauseOnFailure checks if execution should pause based on failure threshold.
+func (t Task) ShouldPauseOnFailure(completed, failed int) bool {
+	threshold := t.GetFailureThresholdPercent()
+	if threshold <= 0 || completed == 0 {
+		return false
+	}
+	failurePercent := (float64(failed) / float64(completed)) * 100
+	return failurePercent > float64(threshold)
 }

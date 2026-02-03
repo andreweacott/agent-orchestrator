@@ -5,7 +5,7 @@
 A platform for automated code transformations and discovery across repositories, supporting:
 
 - **Deployment**: Local (Docker) or production (Kubernetes)
-- **Scope**: Single repository or fleet-wide via Campaigns
+- **Scope**: Single repository or fleet-wide via grouped execution
 - **Execution**: Deterministic (Docker images) or agentic (AI prompts)
 - **Mode**: Transform (create PRs) or Report (collect structured data)
 
@@ -47,12 +47,11 @@ The atomic unit of work. A Task operates on one or more repositories and either:
 - **Transforms** code and creates PRs (`mode: transform`)
 - **Reports** structured data without PRs (`mode: report`)
 
-### Campaign
-
-Orchestrates multiple Tasks across many repositories:
-- Submits Tasks in configurable batches
-- Monitors progress and aggregates results
-- Pauses on failure thresholds for human decision
+Tasks support grouped execution for fleet-wide operations:
+- Organize repositories into groups that share a sandbox
+- Execute groups in parallel with configurable concurrency (`max_parallel`)
+- Pause on failure thresholds for human intervention
+- Retry failed groups independently
 
 ### Modes
 
@@ -312,6 +311,14 @@ timeout: duration             # e.g., "30m" - Total wall-clock time for entire t
                               # Does NOT include: approval wait time (separate timeout)
                               # For multi-repo tasks: applies to entire task, not per-repo
 require_approval: boolean     # Default: true for agentic, false for deterministic
+max_parallel: int             # Max concurrent groups (default: 5, grouped execution only)
+
+# Failure handling (grouped execution only)
+failure:
+  threshold_percent: int      # Pause if >N% of groups fail (0-100)
+  action: pause | abort       # What to do when threshold is exceeded (default: pause)
+                              # pause: wait for human to continue or abort
+                              # abort: immediately skip remaining groups
 
 # PR settings (transform mode only)
 pull_request:
@@ -599,133 +606,52 @@ execution:
 timeout: 30m
 ```
 
-### Campaign Schema (campaign.yaml)
+#### Grouped Execution with Failure Handling
 
-Orchestrates multiple Tasks across repositories:
+For fleet-wide operations, use groups with failure thresholds:
 
-```yaml
-# campaign.yaml - Complete schema
-version: 1                    # Schema version (required, integer)
-id: string                    # Unique identifier
-title: string                 # Human-readable title
-description: string           # Optional longer description
-
-# Repository selection
-repositories:
-  # Option 1: Explicit list
-  explicit:
-    - url: string
-      branch: string
-      setup: [string]
-
-  # Option 2: Query-based (future)
-  query:
-    org: string               # GitHub org
-    topics: [string]          # Filter by topics
-    language: string          # Filter by language
-    exclude: [string]         # Repos to exclude
-
-# Task template - applied to each repository
-task_template:
-  mode: transform | report
-  execution:
-    agentic:
-      prompt: string
-      verifiers: []
-    # or deterministic: {}
-  timeout: duration
-  require_approval: boolean
-  pull_request: {}
-
-# Batch configuration
-batch:
-  size: int                   # Tasks per batch (default: 10)
-  parallelism: int            # Concurrent Tasks within batch (default: 5)
-  delay_between: duration     # Delay between batches (default: 0)
-
-# Failure handling
-failure:
-  threshold_percent: int      # Pause if failure rate exceeds (default: 10)
-  threshold_count: int        # Or pause after N failures
-  action: pause | abort       # What to do on threshold (default: pause)
-
-```
-
-#### Campaign Examples
-
-**Transform Campaign:**
 ```yaml
 version: 1
-id: slog-migration-campaign
-title: "Migrate all Go services to slog"
+id: fleet-migration
+title: "Migrate logging across services"
 
-repositories:
-  explicit:
-    - url: https://github.com/org/service-a.git
-    - url: https://github.com/org/service-b.git
-    # ... 50 more services
+groups:
+  - name: team-a
+    repositories:
+      - url: https://github.com/org/service-1.git
+      - url: https://github.com/org/service-2.git
+  - name: team-b
+    repositories:
+      - url: https://github.com/org/service-3.git
+  - name: team-c
+    repositories:
+      - url: https://github.com/org/service-4.git
 
-task_template:
-  mode: transform
-  execution:
-    agentic:
-      prompt: "Migrate from log.Printf to slog package..."
-      verifiers:
-        - name: build
-          command: ["go", "build", "./..."]
-        - name: test
-          command: ["go", "test", "./..."]
-  timeout: 30m
-  require_approval: true
-  pull_request:
-    branch_prefix: "auto/slog-migration"
-    title: "Migrate to structured logging (slog)"
+execution:
+  agentic:
+    prompt: "Migrate to slog..."
+    verifiers:
+      - name: build
+        command: ["go", "build", "./..."]
 
-batch:
-  size: 10
-  parallelism: 5
+max_parallel: 3
 
 failure:
-  threshold_percent: 10
-  action: pause
+  threshold_percent: 20  # Pause if >20% of groups fail
+  action: pause          # "pause" (default) or "abort"
 ```
 
-**Discovery Campaign:**
-```yaml
-version: 1
-id: log4j-discovery
-title: "Discover Log4j usage across all Java services"
+**Behavior:**
+- Groups execute in parallel (up to `max_parallel`)
+- After each group completes, check failure rate
+- If threshold exceeded and `action: pause`, workflow pauses
+- Human can: `continue` (resume), `continue --skip-remaining` (finish early), or `cancel`
+- If `action: abort`, workflow immediately skips remaining groups
 
-repositories:
-  query:
-    org: my-org
-    language: java
-
-task_template:
-  mode: report
-  execution:
-    agentic:
-      prompt: |
-        Analyze Log4j usage:
-        - Which version is used?
-        - How many files import Log4j?
-        - Is Log4j in dependencies?
-
-      output:
-        schema:
-          type: object
-          properties:
-            log4j_version:
-              type: string
-            file_count:
-              type: integer
-            in_dependencies:
-              type: boolean
-  timeout: 10m
-
-batch:
-  size: 20
-  parallelism: 10
+**Retry Failed Groups:**
+```bash
+# After a task completes with failures, retry only failed groups
+fleetlift retry --file fleet-migration.yaml --workflow-id <original-id> --failed-only
 ```
 
 ### Go Types

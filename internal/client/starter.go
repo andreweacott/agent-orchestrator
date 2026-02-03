@@ -127,6 +127,27 @@ func (c *Client) SteerWorkflow(ctx context.Context, workflowID, prompt string) e
 	return c.temporal.SignalWorkflow(ctx, workflowID, "", workflow.SignalSteer, payload)
 }
 
+// ContinueWorkflow sends a continue signal to resume a paused workflow.
+func (c *Client) ContinueWorkflow(ctx context.Context, workflowID string, skipRemaining bool) error {
+	payload := model.ContinueSignalPayload{SkipRemaining: skipRemaining}
+	return c.temporal.SignalWorkflow(ctx, workflowID, "", workflow.SignalContinue, payload)
+}
+
+// GetExecutionProgress queries workflow for execution progress (grouped execution).
+func (c *Client) GetExecutionProgress(ctx context.Context, workflowID string) (*model.ExecutionProgress, error) {
+	resp, err := c.temporal.QueryWorkflow(ctx, workflowID, "", workflow.QueryExecutionProgress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query workflow execution progress: %w", err)
+	}
+
+	var progress model.ExecutionProgress
+	if err := resp.Get(&progress); err != nil {
+		return nil, fmt.Errorf("failed to decode execution progress: %w", err)
+	}
+
+	return &progress, nil
+}
+
 // GetWorkflowDiff queries workflow for current diff state.
 func (c *Client) GetWorkflowDiff(ctx context.Context, workflowID string) ([]model.DiffOutput, error) {
 	resp, err := c.temporal.QueryWorkflow(ctx, workflowID, "", workflow.QueryDiff)
@@ -338,4 +359,24 @@ func GetSteeringState(ctx context.Context, workflowID string) (*model.SteeringSt
 	}
 	defer c.Close()
 	return c.GetSteeringState(ctx, workflowID)
+}
+
+// ContinueWorkflow sends a continue signal to resume a paused workflow (standalone version).
+func ContinueWorkflow(ctx context.Context, workflowID string, skipRemaining bool) error {
+	c, err := NewClient()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.ContinueWorkflow(ctx, workflowID, skipRemaining)
+}
+
+// GetExecutionProgress queries workflow for execution progress (standalone version).
+func GetExecutionProgress(ctx context.Context, workflowID string) (*model.ExecutionProgress, error) {
+	c, err := NewClient()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.GetExecutionProgress(ctx, workflowID)
 }

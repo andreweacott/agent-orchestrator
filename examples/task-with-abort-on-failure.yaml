@@ -1,0 +1,31 @@
+version: 1
+id: fleet-migration-with-abort
+title: "Migrate logging across services with abort on failure"
+
+groups:
+  - name: team-a
+    repositories:
+      - url: https://github.com/org/service-1.git
+      - url: https://github.com/org/service-2.git
+  - name: team-b
+    repositories:
+      - url: https://github.com/org/service-3.git
+  - name: team-c
+    repositories:
+      - url: https://github.com/org/service-4.git
+
+execution:
+  agentic:
+    prompt: "Migrate to slog for structured logging"
+    verifiers:
+      - name: build
+        command: ["go", "build", "./..."]
+
+max_parallel: 2
+
+failure:
+  threshold_percent: 25  # Abort if >25% of groups fail
+  action: abort          # Immediately stop and skip remaining groups
+
+require_approval: false
+timeout: 30m

@@ -17,16 +17,18 @@ import (
 
 // Signal and query names
 const (
-	SignalApprove = "approve"
-	SignalReject  = "reject"
-	SignalCancel  = "cancel"
-	SignalSteer   = "steer"
+	SignalApprove  = "approve"
+	SignalReject   = "reject"
+	SignalCancel   = "cancel"
+	SignalSteer    = "steer"
+	SignalContinue = "continue"
 
-	QueryStatus        = "get_status"
-	QueryResult        = "get_claude_result"
-	QueryDiff          = "get_diff"
-	QueryVerifierLogs  = "get_verifier_logs"
-	QuerySteeringState = "get_steering_state"
+	QueryStatus            = "get_status"
+	QueryResult            = "get_claude_result"
+	QueryDiff              = "get_diff"
+	QueryVerifierLogs      = "get_verifier_logs"
+	QuerySteeringState     = "get_steering_state"
+	QueryExecutionProgress = "get_execution_progress"
 )
 
 // DefaultMaxSteeringIterations is the default limit for steering iterations.
@@ -996,6 +998,41 @@ func executeGroupedStrategy(ctx workflow.Context, task model.Task, startTime tim
 	prDesc := buildPRDescriptionWithFiles(task, nil) // Files will be per-group
 	prTitle := fmt.Sprintf("fix: %s", task.Title)
 
+	// State for tracking execution progress
+	var (
+		continueRequested bool
+		skipRemaining     bool
+		executionProgress = model.ExecutionProgress{
+			TotalGroups:      len(task.Groups),
+			CompletedGroups:  0,
+			FailedGroups:     0,
+			FailurePercent:   0,
+			IsPaused:         false,
+			FailedGroupNames: []string{},
+		}
+		groupResults      = make(map[string]model.GroupResult)
+		allRepoResults    []model.RepositoryResult
+		cancellationRequested bool
+	)
+
+	// Register query handler for execution progress
+	if err := workflow.SetQueryHandler(ctx, QueryExecutionProgress, func() (*model.ExecutionProgress, error) {
+		return &executionProgress, nil
+	}); err != nil {
+		logger.Warn("Failed to register execution progress query handler", "error", err)
+	}
+
+	// Set up signal channels
+	cancelChannel := workflow.GetSignalChannel(ctx, SignalCancel)
+	continueChannel := workflow.GetSignalChannel(ctx, SignalContinue)
+
+	// Handle cancel signal asynchronously
+	workflow.Go(ctx, func(ctx workflow.Context) {
+		cancelChannel.Receive(ctx, nil)
+		cancellationRequested = true
+		logger.Info("Received cancellation signal")
+	})
+
 	// If approval is required, wait for it at the parent level before spawning children
 	if task.RequireApproval {
 		approved := false
@@ -1003,7 +1040,6 @@ func executeGroupedStrategy(ctx workflow.Context, task model.Task, startTime tim
 
 		approveChannel := workflow.GetSignalChannel(ctx, SignalApprove)
 		rejectChannel := workflow.GetSignalChannel(ctx, SignalReject)
-		cancelChannel := workflow.GetSignalChannel(ctx, SignalCancel)
 
 		selector := workflow.NewSelector(ctx)
 		selector.AddReceive(approveChannel, func(c workflow.ReceiveChannel, more bool) {
@@ -1066,11 +1102,33 @@ func executeGroupedStrategy(ctx workflow.Context, task model.Task, startTime tim
 	})
 
 	// Channel to collect results
+	type groupResultWithName struct {
+		groupName   string
+		repoResults []model.RepositoryResult
+		err         error
+	}
 	resultChannel := workflow.NewChannel(ctx)
+
+	// Track groups that were actually launched
+	launchedGroups := make(map[string]bool)
 
 	// Launch child workflows with concurrency control
 	for _, group := range task.Groups {
 		group := group // capture loop variable
+
+		// Check if we should skip remaining groups
+		if skipRemaining {
+			logger.Info("Skipping group due to skip_remaining flag", "group", group.Name)
+			groupResults[group.Name] = model.GroupResult{
+				GroupName: group.Name,
+				Status:    "skipped",
+			}
+			continue
+		}
+
+		// Mark this group as launched
+		launchedGroups[group.Name] = true
+
 		workflow.Go(ctx, func(gCtx workflow.Context) {
 			// Acquire semaphore
 			semaphore.Receive(gCtx, nil)
@@ -1116,19 +1174,178 @@ func executeGroupedStrategy(ctx workflow.Context, task model.Task, startTime tim
 						Error:      &errMsg,
 					})
 				}
-				resultChannel.Send(gCtx, repoResults)
+				resultChannel.Send(gCtx, groupResultWithName{
+					groupName:   group.Name,
+					repoResults: repoResults,
+					err:         err,
+				})
 			} else if result != nil {
-				resultChannel.Send(gCtx, result.Repositories)
+				resultChannel.Send(gCtx, groupResultWithName{
+					groupName:   group.Name,
+					repoResults: result.Repositories,
+					err:         nil,
+				})
 			}
 		})
 	}
 
-	// Collect all results
-	var allRepoResults []model.RepositoryResult
-	for i := 0; i < len(task.Groups); i++ {
-		var groupResults []model.RepositoryResult
-		resultChannel.Receive(ctx, &groupResults)
-		allRepoResults = append(allRepoResults, groupResults...)
+	// Collect results only for launched groups
+	for range launchedGroups {
+		var result groupResultWithName
+		resultChannel.Receive(ctx, &result)
+
+		allRepoResults = append(allRepoResults, result.repoResults...)
+		executionProgress.CompletedGroups++
+
+		// Determine group status
+		groupStatus := "success"
+		var groupError *string
+
+		// First check if the child workflow itself failed
+		if result.err != nil {
+			groupStatus = "failed"
+			errMsg := result.err.Error()
+			groupError = &errMsg
+		}
+
+		// Then check if any repos in the group failed (this may override the error message)
+		for _, r := range result.repoResults {
+			if r.Status == "failed" {
+				groupStatus = "failed"
+				if r.Error != nil {
+					groupError = r.Error
+				}
+				break
+			}
+		}
+
+		// Only count and record the failure once
+		if groupStatus == "failed" {
+			executionProgress.FailedGroups++
+			executionProgress.FailedGroupNames = append(executionProgress.FailedGroupNames, result.groupName)
+		}
+
+		groupResults[result.groupName] = model.GroupResult{
+			GroupName:    result.groupName,
+			Status:       groupStatus,
+			Repositories: result.repoResults,
+			Error:        groupError,
+		}
+
+		// Update failure percentage
+		if executionProgress.CompletedGroups > 0 {
+			executionProgress.FailurePercent = (float64(executionProgress.FailedGroups) / float64(executionProgress.CompletedGroups)) * 100
+		}
+
+		logger.Info("Group completed", "group", result.groupName, "status", groupStatus,
+			"completed", executionProgress.CompletedGroups, "failed", executionProgress.FailedGroups,
+			"failurePercent", executionProgress.FailurePercent)
+
+		// Check if we should pause on failure threshold
+		if task.ShouldPauseOnFailure(executionProgress.CompletedGroups, executionProgress.FailedGroups) {
+			action := task.GetFailureAction()
+			threshold := task.GetFailureThresholdPercent()
+
+			if action == "abort" {
+				logger.Warn("Aborting due to failure threshold", "threshold", threshold, "failurePercent", executionProgress.FailurePercent)
+				skipRemaining = true
+				// Mark remaining groups as skipped
+				for _, group := range task.Groups {
+					if _, exists := groupResults[group.Name]; !exists {
+						groupResults[group.Name] = model.GroupResult{
+							GroupName: group.Name,
+							Status:    "skipped",
+						}
+					}
+				}
+				break
+			}
+
+			if action == "pause" && !executionProgress.IsPaused {
+				executionProgress.IsPaused = true
+				executionProgress.PausedReason = fmt.Sprintf("Failure threshold exceeded (%.1f%% > %d%%)", executionProgress.FailurePercent, threshold)
+
+				logger.Warn("Pausing due to failure threshold", "threshold", threshold, "failurePercent", executionProgress.FailurePercent)
+
+				// Wait for continue signal or cancellation
+				continueRequested = false
+				selector := workflow.NewSelector(ctx)
+				selector.AddReceive(continueChannel, func(c workflow.ReceiveChannel, more bool) {
+					var payload model.ContinueSignalPayload
+					c.Receive(ctx, &payload)
+					continueRequested = true
+					skipRemaining = payload.SkipRemaining
+					logger.Info("Received continue signal", "skipRemaining", payload.SkipRemaining)
+				})
+				selector.AddReceive(cancelChannel, func(c workflow.ReceiveChannel, more bool) {
+					c.Receive(ctx, nil)
+					cancellationRequested = true
+					logger.Info("Received cancellation during pause")
+				})
+
+				ok, _ := workflow.AwaitWithTimeout(ctx, 24*time.Hour, func() bool {
+					return continueRequested || cancellationRequested
+				})
+
+				if cancellationRequested || !ok {
+					signalDone()
+					duration := workflow.Now(ctx).Sub(startTime).Seconds()
+					errMsg := "Workflow cancelled during pause"
+					if !ok {
+						errMsg = "Continue timeout (24 hours)"
+					}
+
+					// Build group results array
+					var finalGroupResults []model.GroupResult
+					for _, group := range task.Groups {
+						if gr, exists := groupResults[group.Name]; exists {
+							finalGroupResults = append(finalGroupResults, gr)
+						} else {
+							finalGroupResults = append(finalGroupResults, model.GroupResult{
+								GroupName: group.Name,
+								Status:    "pending",
+							})
+						}
+					}
+
+					return &model.TaskResult{
+						TaskID:          task.ID,
+						Status:          model.TaskStatusCancelled,
+						Mode:            task.GetMode(),
+						Repositories:    allRepoResults,
+						Groups:          finalGroupResults,
+						Error:           &errMsg,
+						DurationSeconds: &duration,
+					}
+				}
+
+				executionProgress.IsPaused = false
+				executionProgress.PausedReason = ""
+				logger.Info("Resuming execution after pause")
+
+				if skipRemaining {
+					logger.Info("Skipping remaining groups per continue signal")
+					// Mark remaining groups as skipped
+					for _, group := range task.Groups {
+						if _, exists := groupResults[group.Name]; !exists {
+							groupResults[group.Name] = model.GroupResult{
+								GroupName: group.Name,
+								Status:    "skipped",
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// Build final group results array in order
+	var finalGroupResults []model.GroupResult
+	for _, group := range task.Groups {
+		if gr, exists := groupResults[group.Name]; exists {
+			finalGroupResults = append(finalGroupResults, gr)
+		}
 	}
 
 	// Check for failures
@@ -1149,6 +1366,7 @@ func executeGroupedStrategy(ctx workflow.Context, task model.Task, startTime tim
 			Status:          model.TaskStatusFailed,
 			Mode:            task.GetMode(),
 			Repositories:    allRepoResults,
+			Groups:          finalGroupResults,
 			Error:           &errMsg,
 			DurationSeconds: &duration,
 		}
@@ -1161,6 +1379,7 @@ func executeGroupedStrategy(ctx workflow.Context, task model.Task, startTime tim
 		Status:          model.TaskStatusCompleted,
 		Mode:            task.GetMode(),
 		Repositories:    allRepoResults,
+		Groups:          finalGroupResults,
 		DurationSeconds: &duration,
 	}
 }

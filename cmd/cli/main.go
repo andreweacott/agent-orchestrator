@@ -108,6 +108,20 @@ var steerCmd = &cobra.Command{
 	RunE:  runSteer,
 }
 
+var continueCmd = &cobra.Command{
+	Use:   "continue",
+	Short: "Continue a paused workflow",
+	Long:  "Resume execution of a workflow paused due to failure threshold",
+	RunE:  runContinue,
+}
+
+var retryCmd = &cobra.Command{
+	Use:   "retry",
+	Short: "Retry failed groups from a completed workflow",
+	Long:  "Start a new workflow with only the groups that failed in a previous run",
+	RunE:  runRetry,
+}
+
 func init() {
 	// Run command flags (matches design doc interface)
 	runCmd.Flags().StringP("file", "f", "", "Path to task YAML file")
@@ -171,6 +185,16 @@ func init() {
 	steerCmd.Flags().StringP("prompt", "p", "", "Steering prompt (required)")
 	_ = steerCmd.MarkFlagRequired("prompt")
 
+	// Continue command flags
+	continueCmd.Flags().String("workflow-id", "", "Workflow ID (defaults to last run)")
+	continueCmd.Flags().Bool("skip-remaining", false, "Skip remaining groups after resuming")
+
+	// Retry command flags
+	retryCmd.Flags().StringP("file", "f", "", "Path to task YAML file (required)")
+	retryCmd.Flags().String("workflow-id", "", "Workflow ID to retry from (defaults to last run)")
+	retryCmd.Flags().Bool("failed-only", true, "Retry only failed groups (default: true)")
+	_ = retryCmd.MarkFlagRequired("file")
+
 	// Add commands
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(statusCmd)
@@ -183,6 +207,8 @@ func init() {
 	rootCmd.AddCommand(diffCmd)
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(steerCmd)
+	rootCmd.AddCommand(continueCmd)
+	rootCmd.AddCommand(retryCmd)
 }
 
 // getWorkflowID returns the workflow ID from the flag or falls back to the last workflow.
@@ -210,10 +236,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get status: %w", err)
 	}
 
+	// Try to get execution progress for multi-group workflows
+	progress, progressErr := client.GetExecutionProgress(context.Background(), workflowID)
+
 	if output == "json" {
-		result := map[string]string{
+		result := map[string]interface{}{
 			"workflow_id": workflowID,
 			"status":      string(status),
+		}
+		if progressErr == nil && progress != nil {
+			result["progress"] = progress
 		}
 		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -225,6 +257,27 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Workflow: %s\n", workflowID)
 	fmt.Printf("Status: %s\n", status)
+
+	// Display execution progress if available
+	if progressErr == nil && progress != nil && progress.TotalGroups > 0 {
+		fmt.Printf("\nProgress: %d/%d groups complete\n", progress.CompletedGroups, progress.TotalGroups)
+		if progress.FailedGroups > 0 {
+			fmt.Printf("Failed: %d (%.1f%%)\n", progress.FailedGroups, progress.FailurePercent)
+		}
+
+		if progress.IsPaused {
+			fmt.Printf("\nStatus: PAUSED\n")
+			fmt.Printf("Reason: %s\n", progress.PausedReason)
+			fmt.Printf("\nUse 'fleetlift continue' to resume or 'fleetlift cancel' to abort\n")
+		}
+
+		if len(progress.FailedGroupNames) > 0 {
+			fmt.Printf("\nFailed groups:\n")
+			for _, name := range progress.FailedGroupNames {
+				fmt.Printf("  - %s\n", name)
+			}
+		}
+	}
 
 	return nil
 }
@@ -939,6 +992,123 @@ func runSteer(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Steering signal sent to: %s\n", workflowID)
 	fmt.Println("Use 'fleetlift status' to monitor progress.")
+	return nil
+}
+
+func runContinue(cmd *cobra.Command, args []string) error {
+	workflowID, err := getWorkflowID(cmd)
+	if err != nil {
+		return err
+	}
+	skipRemaining, _ := cmd.Flags().GetBool("skip-remaining")
+
+	if err := client.ContinueWorkflow(context.Background(), workflowID, skipRemaining); err != nil {
+		return fmt.Errorf("failed to send continue signal: %w", err)
+	}
+
+	fmt.Printf("Continue signal sent to: %s\n", workflowID)
+	if skipRemaining {
+		fmt.Println("Remaining groups will be skipped.")
+	}
+	fmt.Println("Use 'fleetlift status' to monitor progress.")
+	return nil
+}
+
+func runRetry(cmd *cobra.Command, args []string) error {
+	filePath, _ := cmd.Flags().GetString("file")
+	workflowID, err := getWorkflowID(cmd)
+	if err != nil {
+		return err
+	}
+	failedOnly, _ := cmd.Flags().GetBool("failed-only")
+
+	// Get the completed workflow result
+	result, err := client.GetWorkflowResult(context.Background(), workflowID)
+	if err != nil {
+		return fmt.Errorf("failed to get workflow result: %w", err)
+	}
+
+	// Load task from file
+	task, err := config.LoadTaskFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to load task file: %w", err)
+	}
+
+	if failedOnly {
+		// Extract failed group names from result
+		var failedGroupNames []string
+		if len(result.Groups) > 0 {
+			// Use Groups field if available
+			for _, gr := range result.Groups {
+				if gr.Status == "failed" {
+					failedGroupNames = append(failedGroupNames, gr.GroupName)
+				}
+			}
+		} else {
+			// Fall back to checking repository results
+			// Map repos to groups from the original task
+			repoToGroup := make(map[string]string)
+			for _, group := range task.Groups {
+				for _, repo := range group.Repositories {
+					repoToGroup[repo.Name] = group.Name
+				}
+			}
+
+			failedGroups := make(map[string]bool)
+			for _, repoResult := range result.Repositories {
+				if repoResult.Status == "failed" {
+					if groupName, ok := repoToGroup[repoResult.Repository]; ok {
+						failedGroups[groupName] = true
+					}
+				}
+			}
+
+			for name := range failedGroups {
+				failedGroupNames = append(failedGroupNames, name)
+			}
+		}
+
+		if len(failedGroupNames) == 0 {
+			fmt.Println("No failed groups found in the workflow result.")
+			return nil
+		}
+
+		// Filter task.Groups to only include failed groups
+		var filteredGroups []model.RepositoryGroup
+		for _, group := range task.Groups {
+			for _, failedName := range failedGroupNames {
+				if group.Name == failedName {
+					filteredGroups = append(filteredGroups, group)
+					break
+				}
+			}
+		}
+
+		if len(filteredGroups) == 0 {
+			return fmt.Errorf("failed groups not found in task file: %v", failedGroupNames)
+		}
+
+		task.Groups = filteredGroups
+		task.Repositories = nil // Clear to avoid conflicts
+
+		fmt.Printf("Retrying %d failed groups: %v\n", len(filteredGroups), failedGroupNames)
+	}
+
+	// Start new workflow with filtered task
+	newWorkflowID, err := client.StartTransform(context.Background(), *task)
+	if err != nil {
+		return fmt.Errorf("failed to start retry workflow: %w", err)
+	}
+
+	// Save workflow ID for later status commands
+	if saveErr := state.SaveLastWorkflow(newWorkflowID); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to save last workflow: %v\n", saveErr)
+	}
+
+	fmt.Printf("Retry workflow started: %s\n", newWorkflowID)
+	fmt.Printf("Original workflow: %s\n", workflowID)
+	fmt.Printf("View at: http://localhost:8233/namespaces/default/workflows/%s\n", newWorkflowID)
+
 	return nil
 }
 

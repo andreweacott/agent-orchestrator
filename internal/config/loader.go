@@ -75,6 +75,7 @@ type taskV1 struct {
 	RequireApproval *bool          `yaml:"require_approval,omitempty"`
 	MaxParallel     int            `yaml:"max_parallel,omitempty"`
 	Groups          []groupV1      `yaml:"groups,omitempty"`
+	Failure         *failureV1     `yaml:"failure,omitempty"`
 	PullRequest     *pullRequestV1 `yaml:"pull_request,omitempty"`
 	Sandbox         *sandboxV1       `yaml:"sandbox,omitempty"`
 	Credentials     *credentialsV1   `yaml:"credentials,omitempty"`
@@ -83,6 +84,11 @@ type taskV1 struct {
 type groupV1 struct {
 	Name         string         `yaml:"name"`
 	Repositories []repositoryV1 `yaml:"repositories"`
+}
+
+type failureV1 struct {
+	ThresholdPercent int    `yaml:"threshold_percent,omitempty"`
+	Action           string `yaml:"action,omitempty"`
 }
 
 type forEachV1 struct {
@@ -299,6 +305,22 @@ func loadTaskV1(data []byte) (*model.Task, error) {
 			Name:         g.Name,
 			Repositories: repos,
 		})
+	}
+
+	// Convert and validate failure config
+	if tv1.Failure != nil {
+		// Validate action is valid
+		if tv1.Failure.Action != "" && tv1.Failure.Action != "pause" && tv1.Failure.Action != "abort" {
+			return nil, fmt.Errorf("failure.action must be 'pause' or 'abort', got: %s", tv1.Failure.Action)
+		}
+		// Validate threshold is reasonable
+		if tv1.Failure.ThresholdPercent < 0 || tv1.Failure.ThresholdPercent > 100 {
+			return nil, fmt.Errorf("failure.threshold_percent must be between 0 and 100, got: %d", tv1.Failure.ThresholdPercent)
+		}
+		task.Failure = &model.FailureConfig{
+			ThresholdPercent: tv1.Failure.ThresholdPercent,
+			Action:           tv1.Failure.Action,
+		}
 	}
 
 	// Convert and validate ForEach

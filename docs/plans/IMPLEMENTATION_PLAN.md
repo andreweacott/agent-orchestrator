@@ -461,92 +461,99 @@ fleetlift run --file transformation-task.yaml
 
 ---
 
-## Phase 5: Campaign Orchestration
+## Phase 5: Grouped Execution with Failure Thresholds - COMPLETE
 
-**Goal**: Orchestrate multiple Tasks across many repositories with batch execution and failure handling.
+**Goal**: Enable fleet-wide operations with failure handling and retry capabilities.
 
-> **Design Rationale**: Campaigns are essential for fleet-wide operations. They enable
-> batch execution with parallelism and failure thresholds for human escalation.
+> **Implementation Note**: Instead of implementing a separate Campaign concept, we enhanced
+> Task execution with grouped execution, failure thresholds, and retry capabilities. This
+> provides the same benefits with a simpler, more flexible model.
 
-### 5.1 Campaign Data Model
+### 5.1 Data Model - COMPLETE
 
-- [ ] Define `Campaign` struct with repository selection and task template
-- [ ] Define `CampaignResult` with aggregated statistics
-- [ ] YAML schema for campaign.yaml
+- [x] Add `FailureConfig` to Task for threshold and action
+- [x] Add `GroupResult` to track per-group execution status
+- [x] Add `ExecutionProgress` for real-time progress queries
+- [x] Add `ContinueSignalPayload` for resume signals
+- [x] Add `Groups` and `OriginalWorkflowID` to TaskResult
 
-### 5.2 Campaign Workflow
+### 5.2 Grouped Execution with Failure Detection - COMPLETE
 
-- [ ] Implement `CampaignWorkflow` as parent workflow
-- [ ] Submit Tasks as child workflows
-- [ ] Batch execution with configurable size and parallelism
-- [ ] Progress monitoring and result aggregation
+- [x] Track results incrementally as groups complete
+- [x] Calculate failure percentage after each group
+- [x] Pause execution when threshold exceeded (action: pause)
+- [x] Abort execution when threshold exceeded (action: abort)
+- [x] Allow in-flight groups to complete during pause/abort
+- [x] Register query handler for execution progress
 
-### 5.3 Failure Handling
+### 5.3 Pause/Continue/Retry - COMPLETE
 
-- [ ] Track failure rate across Tasks
-- [ ] Pause when failure threshold exceeded
-- [ ] Signal handlers for human decisions (abort/continue/retry)
-- [ ] Re-queue failed Tasks on retry decision
+- [x] Signal handler for continue with skip_remaining option
+- [x] Wait for human decision during pause (24hr timeout)
+- [x] Support cancellation during pause
+- [x] CLI: `continue` command with --skip-remaining flag
+- [x] CLI: `retry` command with --failed-only flag
+- [x] Enhanced `status` command to show group progress
 
-### 5.4 CLI Support
+### 5.4 Config Loading - COMPLETE
 
-- [ ] `orchestrator campaign run --file campaign.yaml`
-- [ ] `orchestrator campaign status <id>`
-- [ ] `orchestrator campaign abort <id>`
-- [ ] `orchestrator campaign continue <id>`
-- [ ] `orchestrator campaign retry <id>`
+- [x] Parse `failure.threshold_percent` and `failure.action` from YAML
+- [x] Validate threshold is 0-100
+- [x] Validate action is "pause" or "abort"
+- [x] Helper methods on Task: `GetFailureThresholdPercent()`, `ShouldPauseOnFailure()`
 
 ### Deliverable
 
 ```yaml
-# campaign.yaml
 version: 1
-id: slog-migration-campaign
-title: "Migrate all Go services to slog"
+id: fleet-slog-migration
+title: "Migrate to slog across all services"
 
-repositories:
-  explicit:
-    - url: https://github.com/org/service-a.git
-    - url: https://github.com/org/service-b.git
-    # ... 50 services
+groups:
+  - name: platform-team
+    repositories:
+      - url: https://github.com/org/auth-service.git
+      - url: https://github.com/org/user-service.git
+  - name: payments-team
+    repositories:
+      - url: https://github.com/org/payment-gateway.git
+  - name: notifications-team
+    repositories:
+      - url: https://github.com/org/email-service.git
 
-task_template:
-  mode: transform
-  execution:
-    agentic:
-      prompt: "Migrate from log.Printf to slog..."
-      verifiers:
-        - name: build
-          command: ["go", "build", "./..."]
-  timeout: 30m
-  require_approval: true
-  pull_request:
-    branch_prefix: "auto/slog-migration"
-    title: "Migrate to structured logging"
+execution:
+  agentic:
+    prompt: "Migrate from log.Printf to slog..."
+    verifiers:
+      - name: build
+        command: ["go", "build", "./..."]
 
-batch:
-  size: 10
-  parallelism: 5
+max_parallel: 3
 
 failure:
-  threshold_percent: 10
-  action: pause
+  threshold_percent: 20  # Pause if >20% of groups fail
+  action: pause          # "pause" or "abort"
+
+timeout: 30m
 ```
 
 ```bash
-# Run campaign
-orchestrator campaign run --file campaign.yaml
-# Campaign started: slog-migration-campaign-abc123
+# Run task with grouped execution
+fleetlift run -f fleet-slog-migration.yaml
 
-# Check progress
-orchestrator campaign status slog-migration-campaign-abc123
-# Status: Running
-# Progress: 23/50 tasks complete
-# Failed: 2 (4%)
-# PRs created: 21
+# Check progress (shows group-level detail)
+fleetlift status --workflow-id transform-fleet-slog-migration
+# Progress: 8/12 groups complete
+# Failed: 2 (16%)
 
-# Handle pause on threshold
-orchestrator campaign continue slog-migration-campaign-abc123
+# If paused on threshold
+fleetlift continue --workflow-id transform-fleet-slog-migration
+
+# Retry failed groups after completion
+fleetlift retry \
+  --file fleet-slog-migration.yaml \
+  --workflow-id transform-fleet-slog-migration \
+  --failed-only
 ```
 
 ---
@@ -850,7 +857,7 @@ helm install codetransform ./charts/codetransform \
 | 4 | Report Mode | Discovery and analysis (no PRs) | ✅ Complete |
 | 4b | forEach Discovery | Multi-target iteration within repos | ✅ Complete |
 | 4c | Transformation Repo | Reusable skills, recipe/targets separation | ✅ Complete |
-| 5 | **Campaign** | Batch orchestration, failure handling | ⬜ Not started |
+| 5 | **Grouped Execution** | Failure thresholds, pause/continue, retry | ✅ Complete |
 | 6 | **K8s Controller** | Sandbox controller + CRD for production | ⬜ Not started |
 | 7 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |
 | 8 | **Security** | NetworkPolicy, secrets, scaling | ⬜ Not started |
@@ -860,19 +867,19 @@ Each phase builds on the previous and delivers working functionality.
 
 ### Recommended Next Steps
 
-**Parallel Track A (Product Capabilities):**
-1. **Phase 5** - Campaign orchestration (scales to fleet-wide operations)
-2. **Phase 9.2** - Iterative HITL steering (key differentiator)
-
-**Parallel Track B (Production Infrastructure):**
+**Production Infrastructure Track:**
 1. **Phase 6** - Kubernetes sandbox controller (CRD + controller for least-privilege)
-2. **Phase 7** - Observability (needed to tune production)
+2. **Phase 7** - Observability (metrics, dashboards, alerting)
 3. **Phase 8** - Security hardening (NetworkPolicy, secrets, scaling)
 
-> **Priority Note**: Campaign orchestration (Phase 5) is the next core platform capability.
-> It enables batch execution across many repositories which is valuable for fleet-wide
-> migrations and security fixes. Campaigns can be developed using the existing Docker
-> sandbox before adding Kubernetes support.
+**Enhanced Features Track:**
+1. **Phase 9.3** - Scheduled tasks (recurring transformations)
+2. **Phase 9.4** - Cost tracking (API usage, compute attribution)
+3. **Phase 9.5** - Web UI (optional dashboard)
+
+> **Status Note**: Core platform capabilities are complete. All product features (agentic/deterministic
+> transforms, report mode, grouped execution, failure handling, retry) are implemented. Next phase
+> focuses on production infrastructure (Kubernetes) and operational features (observability, security).
 
 ### Key Changes from Previous Plan
 
@@ -881,5 +888,5 @@ Each phase builds on the previous and delivers working functionality.
 | Phase 4: CRD & Controller | Phase 4: Report Mode | Report mode is core functionality; CRD is optional convenience layer |
 | Phase 8: Agent Sandbox | Removed | Plain K8s Jobs are sufficient; Agent Sandbox adds complexity without clear benefit |
 | Phase 9.6: Report Mode | Phase 4: Report Mode | Promoted to core phase—discovery is first-class, not an afterthought |
-| Campaign as "future" | Phase 5: Campaign | Campaign is core functionality for fleet-wide operations |
+| Campaign as separate concept | Phase 5: Grouped Execution | Simpler model: failure handling at Task level with groups instead of separate Campaign type |
 | Direct K8s API from worker | Phase 6: Controller pattern | Least-privilege: worker creates CRs, controller has elevated permissions |
