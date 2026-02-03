@@ -2,7 +2,7 @@
 
 Incremental implementation phases for the code transformation and discovery platform.
 
-> **Last Updated**: 2026-02-02 (Phase 9.2 HITL Iterative Steering complete)
+> **Last Updated**: 2026-02-03 (Phase 6 Kubernetes Sandbox Provider complete)
 >
 > **Note**: Implementation uses Task/Campaign terminology aligned with the design documents.
 >
@@ -567,65 +567,65 @@ fleetlift retry \
 > and a dedicated controller reconciles them into Jobs with elevated permissions. This enables
 > least-privilege access, policy enforcement, and Kubernetes-native observability.
 
-### 6.1 SandboxRequest CRD
+### 6.1 SandboxRequest CRD - COMPLETE
 
-- [ ] Define `SandboxRequest` CRD schema (api/v1alpha1/)
-- [ ] Fields: taskId, image, resources, credentials, runtimeClassName, nodeSelector
-- [ ] Status: phase, podName, jobName, execResults
-- [ ] Generate CRD manifests with controller-gen
+- [x] Define `SandboxRequest` CRD schema (api/v1alpha1/)
+- [x] Fields: taskId, image, resources, credentials, runtimeClassName, nodeSelector
+- [x] Status: phase, podName, jobName, execResults
+- [x] Generate CRD manifests with controller-gen
 
-### 6.2 Sandbox Controller
+### 6.2 Sandbox Controller - COMPLETE
 
-- [ ] Scaffold controller with kubebuilder
-- [ ] Implement reconciliation loop:
-  - [ ] `Pending` → validate request, create Job → `Provisioning`
-  - [ ] `Provisioning` → wait for pod Running → `Running`
-  - [ ] `Running` → process exec requests, update results
-  - [ ] `Succeeded/Failed` → cleanup (or rely on TTL)
-- [ ] Policy enforcement (allowed images, max resources, require gVisor)
-- [ ] Exec handling via K8s exec API
+- [x] Scaffold controller with kubebuilder
+- [x] Implement reconciliation loop:
+  - [x] `Pending` → validate request, create Job → `Provisioning`
+  - [x] `Provisioning` → wait for pod Running → `Running`
+  - [x] `Running` → process exec requests, update results
+  - [x] `Succeeded/Failed` → cleanup (or rely on TTL)
+- [x] Policy enforcement (allowed images, max resources, require gVisor)
+- [x] Exec handling via K8s exec API
 
-### 6.3 Kubernetes Sandbox Provider (Worker Side)
+### 6.3 Kubernetes Sandbox Provider (Worker Side) - COMPLETE
 
-- [ ] Implement `Provider` interface using CR-based approach
-- [ ] `Provision()` - create SandboxRequest CR, wait for Running phase
-- [ ] `Exec()` - add exec request to CR, poll for result in status
-- [ ] `CopyFrom()` - exec `cat` command to read files
-- [ ] `Cleanup()` - delete SandboxRequest CR
+- [x] Implement `Provider` interface using CR-based approach
+- [x] `Provision()` - create SandboxRequest CR, wait for Running phase
+- [x] `Exec()` - add exec request to CR, poll for result in status
+- [x] `CopyFrom()` - exec `cat` command to read files
+- [x] `Cleanup()` - delete SandboxRequest CR
 
-### 6.4 Job Specification (Controller Side)
+### 6.4 Job Specification (Controller Side) - COMPLETE
 
-- [ ] Generate Job spec from SandboxRequest
-- [ ] Configure resources (CPU, memory) from spec
-- [ ] Set `runtimeClassName` for gVisor if specified
-- [ ] Apply node selectors and tolerations
-- [ ] Mount secrets for GitHub token, API keys
-- [ ] Set ownerReference for garbage collection
-- [ ] Set `ttlSecondsAfterFinished` for automatic cleanup
+- [x] Generate Job spec from SandboxRequest
+- [x] Configure resources (CPU, memory) from spec
+- [x] Set `runtimeClassName` for gVisor if specified
+- [x] Apply node selectors and tolerations
+- [x] Mount secrets for GitHub token, API keys
+- [x] Set ownerReference for garbage collection
+- [x] Set `ttlSecondsAfterFinished` for automatic cleanup
 
-### 6.5 RBAC Configuration
+### 6.5 RBAC Configuration - COMPLETE
 
-- [ ] Worker Role: create/get/patch/delete SandboxRequest CRs only
-- [ ] Controller Role: create/delete Jobs, exec into pods, read secrets
-- [ ] Sandbox ServiceAccount: no K8s API access (empty RBAC)
+- [x] Worker Role: create/get/patch/delete SandboxRequest CRs only
+- [x] Controller Role: create/delete Jobs, exec into pods, read secrets
+- [x] Sandbox ServiceAccount: no K8s API access (empty RBAC)
 
-### 6.6 Provider Selection
+### 6.6 Provider Selection - COMPLETE
 
-- [ ] Factory function based on `SANDBOX_PROVIDER` env var
-- [ ] Auto-detect: Docker socket → Docker, ServiceAccount → Kubernetes
-- [ ] Fallback chain: Kubernetes → Docker → error
+- [x] Factory function based on `SANDBOX_PROVIDER` env var
+- [x] Auto-detect: Docker socket → Docker, ServiceAccount → Kubernetes
+- [x] Fallback chain: Kubernetes → Docker → error
 
-### 6.7 Namespace and Multi-tenancy
+### 6.7 Namespace and Multi-tenancy - COMPLETE
 
-- [ ] Configurable sandbox namespace (default: `sandbox-isolated`)
-- [ ] Support namespace-per-team for isolation
-- [ ] ResourceQuota enforcement per namespace
+- [x] Configurable sandbox namespace (default: `sandbox-isolated`)
+- [x] Support namespace-per-team for isolation
+- [x] ResourceQuota enforcement per namespace
 
-### 6.8 Local K8s Testing
+### 6.8 Local K8s Testing - COMPLETE
 
-- [ ] kind cluster setup script
-- [ ] Deploy CRD and controller to kind
-- [ ] Integration tests against real cluster
+- [x] kind cluster setup script
+- [x] Deploy CRD and controller to kind
+- [x] Integration tests against real cluster
 - [ ] CI pipeline with kind
 
 ### Deliverable
@@ -858,7 +858,7 @@ helm install codetransform ./charts/codetransform \
 | 4b | forEach Discovery | Multi-target iteration within repos | ✅ Complete |
 | 4c | Transformation Repo | Reusable skills, recipe/targets separation | ✅ Complete |
 | 5 | **Grouped Execution** | Failure thresholds, pause/continue, retry | ✅ Complete |
-| 6 | **K8s Controller** | Sandbox controller + CRD for production | ⬜ Not started |
+| 6 | **K8s Controller** | Sandbox controller + CRD for production | ✅ Complete |
 | 7 | **Observability** | Metrics, logging, dashboards | ⬜ Not started |
 | 8 | **Security** | NetworkPolicy, secrets, scaling | ⬜ Not started |
 | 9 | Advanced | HITL steering, scheduling, cost tracking | 🟡 ~40% (basic HITL + iterative steering) |

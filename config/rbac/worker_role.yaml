@@ -1,0 +1,36 @@
+# Worker RBAC - Minimal permissions for creating SandboxRequest CRs only
+# The worker doesn't need access to Jobs, Pods, or Secrets directly
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleetlift-worker
+  namespace: fleetlift-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fleetlift-worker
+  namespace: fleetlift-system
+rules:
+  # SandboxRequest CRUD - this is all the worker needs
+  - apiGroups: ["fleetlift.io"]
+    resources: ["sandboxrequests"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["fleetlift.io"]
+    resources: ["sandboxrequests/status"]
+    verbs: ["get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleetlift-worker
+  namespace: fleetlift-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fleetlift-worker
+subjects:
+  - kind: ServiceAccount
+    name: fleetlift-worker
+    namespace: fleetlift-system

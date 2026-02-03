@@ -1,0 +1,96 @@
+# Controller Deployment
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fleetlift-system
+  labels:
+    app.kubernetes.io/name: fleetlift
+    app.kubernetes.io/component: controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleetlift-controller
+  namespace: fleetlift-system
+  labels:
+    app.kubernetes.io/name: fleetlift
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fleetlift
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fleetlift
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: fleetlift-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: fleetlift-controller:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --leader-elect=true
+            - --sandbox-namespace=sandbox-isolated
+          env:
+            - name: SANDBOX_NAMESPACE
+              value: sandbox-isolated
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleetlift-controller-metrics
+  namespace: fleetlift-system
+  labels:
+    app.kubernetes.io/name: fleetlift
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    app.kubernetes.io/name: fleetlift
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics

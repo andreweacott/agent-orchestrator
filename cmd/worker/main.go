@@ -12,7 +12,9 @@ import (
 
 	"github.com/tinkerloft/fleetlift/internal/activity"
 	internalclient "github.com/tinkerloft/fleetlift/internal/client"
+	"github.com/tinkerloft/fleetlift/internal/sandbox"
 	"github.com/tinkerloft/fleetlift/internal/sandbox/docker"
+	"github.com/tinkerloft/fleetlift/internal/sandbox/kubernetes"
 	"github.com/tinkerloft/fleetlift/internal/workflow"
 )
 
@@ -55,20 +57,27 @@ func main() {
 	log.Printf("Connected to Temporal at %s", temporalAddr)
 	log.Printf("Task queue: %s", internalclient.TaskQueue)
 
-	// Create Docker provider
-	dockerProvider, err := docker.NewProvider()
+	// Create sandbox provider using factory
+	factory := sandbox.NewProviderFactory(
+		func() (sandbox.Provider, error) { return docker.NewProvider() },
+		func() (sandbox.Provider, error) { return kubernetes.NewProvider() },
+	)
+
+	providerType := sandbox.DetectProviderType()
+	sandboxProvider, err := factory.CreateWithType(providerType)
 	if err != nil {
-		log.Fatalf("Failed to create Docker provider: %v", err)
+		log.Fatalf("Failed to create sandbox provider: %v", err)
 	}
+	log.Printf("Using sandbox provider: %s", sandboxProvider.Name())
 
 	// Create activities
-	sandboxActivities := activity.NewSandboxActivities(dockerProvider)
-	claudeActivities := activity.NewClaudeCodeActivities(dockerProvider)
-	deterministicActivities := activity.NewDeterministicActivities(dockerProvider)
-	githubActivities := activity.NewGitHubActivities(dockerProvider)
+	sandboxActivities := activity.NewSandboxActivities(sandboxProvider)
+	claudeActivities := activity.NewClaudeCodeActivities(sandboxProvider)
+	deterministicActivities := activity.NewDeterministicActivities(sandboxProvider)
+	githubActivities := activity.NewGitHubActivities(sandboxProvider)
 	slackActivities := activity.NewSlackActivities()
-	reportActivities := activity.NewReportActivities(dockerProvider)
-	steeringActivities := activity.NewSteeringActivities(dockerProvider)
+	reportActivities := activity.NewReportActivities(sandboxProvider)
+	steeringActivities := activity.NewSteeringActivities(sandboxProvider)
 
 	// Create worker
 	w := worker.New(c, internalclient.TaskQueue, worker.Options{})
