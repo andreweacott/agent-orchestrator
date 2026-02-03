@@ -1,0 +1,69 @@
+# Controller RBAC - Elevated permissions for managing sandbox Jobs and Pods
+# The controller needs to create Jobs, exec into Pods, and read Secrets
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleetlift-controller
+  namespace: fleetlift-system
+---
+# ClusterRole for controller - needs cross-namespace access for sandbox pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fleetlift-controller
+rules:
+  # SandboxRequest management
+  - apiGroups: ["fleetlift.io"]
+    resources: ["sandboxrequests"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["fleetlift.io"]
+    resources: ["sandboxrequests/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["fleetlift.io"]
+    resources: ["sandboxrequests/finalizers"]
+    verbs: ["update"]
+
+  # Job management in sandbox namespace
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Pod access for exec and status checks
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Secret access for credentials injection
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # Events for status reporting
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leader election (if enabled)
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fleetlift-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fleetlift-controller
+subjects:
+  - kind: ServiceAccount
+    name: fleetlift-controller
+    namespace: fleetlift-system

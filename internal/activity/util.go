@@ -5,9 +5,8 @@ import (
 	"strings"
 )
 
-// shellQuote properly quotes a string for safe use in shell commands.
-// Uses single quotes and escapes any single quotes within.
-func shellQuote(s string) string {
-	escaped := strings.ReplaceAll(s, "'", "'\"'\"'")
-	return "'" + escaped + "'"
+// ShellQuote escapes a string for safe use in shell commands.
+// Uses single quotes and escapes any embedded single quotes.
+func ShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }

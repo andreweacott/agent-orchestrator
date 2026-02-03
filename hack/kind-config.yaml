@@ -1,0 +1,22 @@
+# Kind cluster configuration for local development and testing
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: fleetlift
+nodes:
+  - role: control-plane
+    # Expose ports for debugging
+    extraPortMappings:
+      - containerPort: 30000
+        hostPort: 30000
+        protocol: TCP
+  - role: worker
+    labels:
+      workload-type: sandbox
+# Enable features needed for sandbox security
+featureGates:
+  # Enable user namespaces for additional isolation (optional)
+  # UserNamespacesSupport: true
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+      endpoint = ["http://localhost:5000"]

@@ -1,4 +1,4 @@
-.PHONY: build test clean fleetlift-worker fleetlift sandbox-image all temporal-dev temporal-up temporal-down temporal-logs sandbox-build
+.PHONY: build test clean fleetlift-worker fleetlift sandbox-image all temporal-dev temporal-up temporal-down temporal-logs sandbox-build generate manifests controller-image fleetlift-controller
 
 # Build all binaries
 all: build
@@ -70,3 +70,19 @@ temporal-logs:
 # Build sandbox image
 sandbox-build:
 	docker build -f docker/Dockerfile.sandbox -t claude-code-sandbox:latest docker/
+
+# Generate code (deepcopy, etc.)
+generate:
+	controller-gen object paths="./api/..."
+
+# Generate CRD manifests
+manifests:
+	controller-gen crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
+
+# Build controller binary
+fleetlift-controller:
+	go build -o bin/fleetlift-controller ./cmd/controller
+
+# Build controller Docker image
+controller-image:
+	docker build -f docker/Dockerfile.controller -t fleetlift-controller:latest .

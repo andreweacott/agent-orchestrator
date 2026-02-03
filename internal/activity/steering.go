@@ -110,7 +110,7 @@ func (a *SteeringActivities) GetDiff(ctx context.Context, input GetDiffInput) ([
 			}
 
 			// Get diff for this file - use shell quoting to prevent command injection
-			escapedPath := shellQuote(file.path)
+			escapedPath := ShellQuote(file.path)
 			var diffCmd string
 			if file.status == "added" || file.status == "untracked" {
 				// For new files, show the entire content

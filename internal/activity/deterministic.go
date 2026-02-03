@@ -166,15 +166,15 @@ func buildDockerRunCommand(image string, args []string, env map[string]string) s
 	sort.Strings(keys)
 	for _, key := range keys {
 		value := env[key]
-		parts = append(parts, fmt.Sprintf("-e %s=%s", key, shellQuote(value)))
+		parts = append(parts, fmt.Sprintf("-e %s=%s", key, ShellQuote(value)))
 	}
 
 	// Add image name (always quoted for safety)
-	parts = append(parts, shellQuote(image))
+	parts = append(parts, ShellQuote(image))
 
 	// Add arguments (always quoted for safety)
 	for _, arg := range args {
-		parts = append(parts, shellQuote(arg))
+		parts = append(parts, ShellQuote(arg))
 	}
 
 	return strings.Join(parts, " ")
